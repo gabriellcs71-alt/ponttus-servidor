@@ -3,12 +3,11 @@ from flask_cors import CORS
 import sqlite3
 import hashlib
 import os
-from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-DB = "ponto.db"
+DB = os.path.join(os.path.dirname(__file__), "ponto.db")
 
 def get_db():
     conn = sqlite3.connect(DB)
@@ -18,10 +17,9 @@ def get_db():
 def gerar_hash(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
-ADMIN_HASH = gerar_hash('admin123')
-
 def init_db():
     conn = get_db()
+    admin_hash = gerar_hash('admin123')
     conn.executescript(f"""
         CREATE TABLE IF NOT EXISTS funcionarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,24 +41,43 @@ def init_db():
             almoco_fim TEXT,
             saida TEXT,
             observacao TEXT,
-            assinatura TEXT,
             enviado_em TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
         );
         INSERT OR IGNORE INTO funcionarios (nome, usuario, senha_hash, ativo)
-        VALUES ('Administrador', 'admin', '{ADMIN_HASH}', 1);
+        VALUES ('Administrador', 'admin', '{admin_hash}', 1);
     """)
     conn.commit()
     conn.close()
 
-@app.route('/login', methods=['POST'])
+@app.before_request
+def handle_options():
+    if request.method == 'OPTIONS':
+        response = jsonify({'ok': True})
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response
+
+@app.after_request
+def after_request(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    return jsonify({"ok": True, "msg": "Ponttus servidor online"})
+
+@app.route('/login', methods=['POST', 'OPTIONS'])
 def login():
     data = request.json
-    usuario = data.get('usuario','').strip()
-    senha = data.get('senha','')
+    usuario = (data.get('usuario') or '').strip().lower()
+    senha = data.get('senha') or ''
     conn = get_db()
     row = conn.execute(
-        "SELECT * FROM funcionarios WHERE usuario=? AND senha_hash=? AND ativo=1",
+        "SELECT * FROM funcionarios WHERE LOWER(usuario)=? AND senha_hash=? AND ativo=1",
         (usuario, gerar_hash(senha))
     ).fetchone()
     conn.close()
@@ -70,7 +87,7 @@ def login():
                         "cargo": row["cargo"]})
     return jsonify({"ok": False, "erro": "Usuário ou senha inválidos"}), 401
 
-@app.route('/registros', methods=['POST'])
+@app.route('/registros', methods=['POST', 'OPTIONS'])
 def salvar_registros():
     data = request.json
     funcionario_id = data.get('funcionario_id')
@@ -123,23 +140,23 @@ def get_registros(funcionario_id):
 @app.route('/admin/funcionarios', methods=['GET'])
 def listar_funcionarios():
     conn = get_db()
-    rows = conn.execute("SELECT id, nome, usuario, matricula, cargo, ativo, criado_em FROM funcionarios ORDER BY nome").fetchall()
+    rows = conn.execute("SELECT id, nome, usuario, matricula, cargo, ativo FROM funcionarios ORDER BY nome").fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-@app.route('/admin/funcionarios', methods=['POST'])
+@app.route('/admin/funcionarios', methods=['POST', 'OPTIONS'])
 def criar_funcionario():
     data = request.json
-    nome = data.get('nome','').strip()
-    usuario = data.get('usuario','').strip()
-    senha = data.get('senha','')
+    nome = (data.get('nome') or '').strip()
+    usuario = (data.get('usuario') or '').strip()
+    senha = data.get('senha') or ''
     if not nome or not usuario or not senha:
         return jsonify({"ok": False, "erro": "Nome, usuário e senha são obrigatórios"}), 400
     conn = get_db()
     try:
         conn.execute(
             "INSERT INTO funcionarios (nome, usuario, senha_hash, matricula, cargo) VALUES (?,?,?,?,?)",
-            (nome, usuario, gerar_hash(senha), data.get('matricula',''), data.get('cargo',''))
+            (nome, usuario.lower(), gerar_hash(senha), data.get('matricula',''), data.get('cargo',''))
         )
         conn.commit()
         return jsonify({"ok": True})
@@ -148,17 +165,17 @@ def criar_funcionario():
     finally:
         conn.close()
 
-@app.route('/admin/funcionarios/<int:fid>', methods=['PUT'])
+@app.route('/admin/funcionarios/<int:fid>', methods=['PUT', 'OPTIONS'])
 def atualizar_funcionario(fid):
     data = request.json
     conn = get_db()
     if data.get('senha'):
         conn.execute("UPDATE funcionarios SET nome=?, usuario=?, senha_hash=?, matricula=?, cargo=?, ativo=? WHERE id=?",
-            (data['nome'], data['usuario'], gerar_hash(data['senha']),
+            (data['nome'], data['usuario'].lower(), gerar_hash(data['senha']),
              data.get('matricula',''), data.get('cargo',''), data.get('ativo',1), fid))
     else:
         conn.execute("UPDATE funcionarios SET nome=?, usuario=?, matricula=?, cargo=?, ativo=? WHERE id=?",
-            (data['nome'], data['usuario'], data.get('matricula',''), data.get('cargo',''), data.get('ativo',1), fid))
+            (data['nome'], data['usuario'].lower(), data.get('matricula',''), data.get('cargo',''), data.get('ativo',1), fid))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -181,11 +198,8 @@ def admin_registros():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-@app.route('/ping', methods=['GET'])
-def ping():
-    return jsonify({"ok": True, "msg": "Ponttus servidor online"})
+init_db()
 
 if __name__ == '__main__':
-    init_db()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
