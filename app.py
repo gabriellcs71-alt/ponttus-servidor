@@ -1,8 +1,3 @@
-bash
-
-cat /home/claude/ponto_app/servidor/app.py
-Saída
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sqlite3
@@ -20,9 +15,14 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+def gerar_hash(senha):
+    return hashlib.sha256(senha.encode()).hexdigest()
+
+ADMIN_HASH = gerar_hash('admin123')
+
 def init_db():
     conn = get_db()
-    conn.executescript("""
+    conn.executescript(f"""
         CREATE TABLE IF NOT EXISTS funcionarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
@@ -48,15 +48,11 @@ def init_db():
             FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
         );
         INSERT OR IGNORE INTO funcionarios (nome, usuario, senha_hash, ativo)
-        VALUES ('Administrador', 'admin', '""" + hashlib.sha256('admin123'.encode()).hexdigest() + """', 1);
+        VALUES ('Administrador', 'admin', '{ADMIN_HASH}', 1);
     """)
     conn.commit()
     conn.close()
 
-def hash_senha(senha):
-    return hashlib.sha256(senha.encode()).hexdigest()
-
-# ── LOGIN ──────────────────────────────────────────────
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
@@ -65,14 +61,15 @@ def login():
     conn = get_db()
     row = conn.execute(
         "SELECT * FROM funcionarios WHERE usuario=? AND senha_hash=? AND ativo=1",
-        (usuario, hash_senha(senha))
+        (usuario, gerar_hash(senha))
     ).fetchone()
     conn.close()
     if row:
-        return jsonify({"ok": True, "id": row["id"], "nome": row["nome"], "usuario": row["usuario"], "matricula": row["matricula"], "cargo": row["cargo"]})
+        return jsonify({"ok": True, "id": row["id"], "nome": row["nome"],
+                        "usuario": row["usuario"], "matricula": row["matricula"],
+                        "cargo": row["cargo"]})
     return jsonify({"ok": False, "erro": "Usuário ou senha inválidos"}), 401
 
-# ── REGISTROS ─────────────────────────────────────────
 @app.route('/registros', methods=['POST'])
 def salvar_registros():
     data = request.json
@@ -82,7 +79,6 @@ def salvar_registros():
         return jsonify({"ok": False, "erro": "Dados inválidos"}), 400
     conn = get_db()
     for reg in registros:
-        # Verifica se já existe registro para essa data
         existe = conn.execute(
             "SELECT id FROM registros WHERE funcionario_id=? AND data=?",
             (funcionario_id, reg.get('data'))
@@ -90,26 +86,26 @@ def salvar_registros():
         if existe:
             conn.execute("""
                 UPDATE registros SET cidade=?, entrada=?, almoco_inicio=?,
-                almoco_fim=?, saida=?, observacao=?, assinatura=?, enviado_em=datetime('now')
+                almoco_fim=?, saida=?, observacao=?, enviado_em=datetime('now')
                 WHERE funcionario_id=? AND data=?
             """, (reg.get('cidade'), reg.get('entrada'), reg.get('almoco_inicio'),
                   reg.get('almoco_fim'), reg.get('saida'), reg.get('observacao'),
-                  reg.get('assinatura'), funcionario_id, reg.get('data')))
+                  funcionario_id, reg.get('data')))
         else:
             conn.execute("""
                 INSERT INTO registros (funcionario_id, data, cidade, entrada,
-                almoco_inicio, almoco_fim, saida, observacao, assinatura)
-                VALUES (?,?,?,?,?,?,?,?,?)
+                almoco_inicio, almoco_fim, saida, observacao)
+                VALUES (?,?,?,?,?,?,?,?)
             """, (funcionario_id, reg.get('data'), reg.get('cidade'),
                   reg.get('entrada'), reg.get('almoco_inicio'), reg.get('almoco_fim'),
-                  reg.get('saida'), reg.get('observacao'), reg.get('assinatura')))
+                  reg.get('saida'), reg.get('observacao')))
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "salvos": len(registros)})
 
 @app.route('/registros/<int:funcionario_id>', methods=['GET'])
 def get_registros(funcionario_id):
-    mes = request.args.get('mes')  # formato YYYY-MM
+    mes = request.args.get('mes')
     conn = get_db()
     if mes:
         rows = conn.execute(
@@ -124,7 +120,6 @@ def get_registros(funcionario_id):
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-# ── ADMIN: FUNCIONÁRIOS ───────────────────────────────
 @app.route('/admin/funcionarios', methods=['GET'])
 def listar_funcionarios():
     conn = get_db()
@@ -141,12 +136,10 @@ def criar_funcionario():
     if not nome or not usuario or not senha:
         return jsonify({"ok": False, "erro": "Nome, usuário e senha são obrigatórios"}), 400
     conn = get_db()
-    matricula = data.get('matricula','')
-    cargo = data.get('cargo','')
     try:
         conn.execute(
             "INSERT INTO funcionarios (nome, usuario, senha_hash, matricula, cargo) VALUES (?,?,?,?,?)",
-            (nome, usuario, hash_senha(senha), matricula, cargo)
+            (nome, usuario, gerar_hash(senha), data.get('matricula',''), data.get('cargo',''))
         )
         conn.commit()
         return jsonify({"ok": True})
@@ -159,9 +152,10 @@ def criar_funcionario():
 def atualizar_funcionario(fid):
     data = request.json
     conn = get_db()
-    if 'senha' in data and data['senha']:
+    if data.get('senha'):
         conn.execute("UPDATE funcionarios SET nome=?, usuario=?, senha_hash=?, matricula=?, cargo=?, ativo=? WHERE id=?",
-            (data['nome'], data['usuario'], hash_senha(data['senha']), data.get('matricula',''), data.get('cargo',''), data.get('ativo',1), fid))
+            (data['nome'], data['usuario'], gerar_hash(data['senha']),
+             data.get('matricula',''), data.get('cargo',''), data.get('ativo',1), fid))
     else:
         conn.execute("UPDATE funcionarios SET nome=?, usuario=?, matricula=?, cargo=?, ativo=? WHERE id=?",
             (data['nome'], data['usuario'], data.get('matricula',''), data.get('cargo',''), data.get('ativo',1), fid))
@@ -189,7 +183,7 @@ def admin_registros():
 
 @app.route('/ping', methods=['GET'])
 def ping():
-    return jsonify({"ok": True, "msg": "Ponto App servidor online"})
+    return jsonify({"ok": True, "msg": "Ponttus servidor online"})
 
 if __name__ == '__main__':
     init_db()
