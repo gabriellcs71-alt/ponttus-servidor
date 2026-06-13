@@ -60,6 +60,7 @@
 <div class="tabs">
   <button class="tab ativa" id="tabFunc" onclick="mostrar('func')">Funcionários</button>
   <button class="tab" id="tabReg" onclick="mostrar('reg')">Registros de Ponto</button>
+  <button class="tab" id="tabBanco" onclick="mostrar('banco')">Banco de Horas</button>
 </div>
 
 <main>
@@ -89,6 +90,23 @@
       <table>
         <thead><tr><th>Funcionário</th><th>Data</th><th>Situação</th><th>Cidade</th><th>Entrada</th><th>Almoço</th><th>Saída</th><th>Horas</th><th></th></tr></thead>
         <tbody id="tbReg"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="secBanco" style="display:none">
+    <div class="barra">
+      <label style="font-size:13px;font-weight:bold;color:var(--vermelho)">Mês:</label>
+      <input type="month" id="bancoMes">
+      <button class="btn" onclick="carregarBanco()">Calcular</button>
+      <button class="btn sec" onclick="document.getElementById('bancoMes').value='';carregarBanco()">Acumulado (tudo)</button>
+      <span style="font-size:12px;color:#888;margin-left:auto">Jornada: 8h48/dia · seg a sex · falta = −8h48</span>
+    </div>
+    <div class="resumo" id="resumoBanco"></div>
+    <div style="max-height:60vh;overflow:auto">
+      <table>
+        <thead><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Faltas</th><th>Saldo do banco</th></tr></thead>
+        <tbody id="tbBanco"></tbody>
       </table>
     </div>
   </section>
@@ -158,11 +176,12 @@ function aviso(texto, ok) {
 }
 
 function mostrar(qual) {
-  document.getElementById('secFunc').style.display = qual === 'func' ? '' : 'none';
-  document.getElementById('secReg').style.display  = qual === 'reg'  ? '' : 'none';
-  document.getElementById('tabFunc').classList.toggle('ativa', qual === 'func');
-  document.getElementById('tabReg').classList.toggle('ativa', qual === 'reg');
+  ['func', 'reg', 'banco'].forEach(q => {
+    document.getElementById('sec' + q[0].toUpperCase() + q.slice(1)).style.display = qual === q ? '' : 'none';
+    document.getElementById('tab' + q[0].toUpperCase() + q.slice(1)).classList.toggle('ativa', qual === q);
+  });
   if (qual === 'reg' && registros.length === 0) carregarRegistros();
+  if (qual === 'banco') carregarBanco();
 }
 
 async function carregarFuncionarios() {
@@ -223,7 +242,7 @@ async function salvarFuncionario(ev) {
 }
 
 function calcHoras(r) {
-  const min = t => { const [h, m] = (t || '').split(':').map(Number); return isNaN(h) ? null : h * 60 + m; };
+  const min = t => { const [h, m] = (t || '').split(':').map(Number); return (isNaN(h) || isNaN(m)) ? null : h * 60 + m; };
   const e = min(r.entrada), s = min(r.saida);
   if (e === null || s === null) return null;
   let total = s - e; if (total < 0) total += 24 * 60;
@@ -263,6 +282,55 @@ async function carregarRegistros() {
       <div class="card"><b>${registros.length}</b><span>registros</span></div>
       <div class="card"><b>${new Set(registros.map(r => r.funcionario_id)).size}</b><span>funcionários</span></div>
       <div class="card"><b>${fmtMin(totalMin)}</b><span>horas trabalhadas (${comHoras} dias completos)</span></div>`;
+  } catch { aviso('Erro de conexão com o servidor.'); }
+}
+
+// ── BANCO DE HORAS ────────────────────────────────────
+// Jornada 8h48 (528 min), seg-sex. Atestado/folga/feriado neutralizam (saldo 0);
+// falta debita a jornada; fim de semana trabalhado vira crédito.
+const JORNADA_MIN = 8 * 60 + 48;
+function diaUtilISO(iso) { const d = new Date(iso + 'T00:00:00').getDay(); return d >= 1 && d <= 5; }
+function saldoReg(r) {
+  if (r.tipo === 'atestado' || r.tipo === 'folga' || r.tipo === 'feriado') return 0;
+  const util = diaUtilISO(r.data);
+  if (r.tipo === 'falta') return util ? -JORNADA_MIN : 0;
+  const h = calcHoras(r);
+  if (h === null) return 0;                 // dia de trabalho incompleto: não pontua
+  return h - (util ? JORNADA_MIN : 0);
+}
+function fmtSaldo(m) {
+  const sg = m < 0 ? '−' : '+', a = Math.abs(m);
+  return `${sg}${Math.floor(a / 60)}h${String(a % 60).padStart(2, '0')}`;
+}
+
+async function carregarBanco() {
+  const mes = document.getElementById('bancoMes').value;
+  try {
+    const r = await fetch(`${API}/admin/registros${mes ? '?mes=' + mes : ''}`, { headers: hdrs() });
+    if (r.status === 401) { aviso('Chave admin inválida.'); return; }
+    const regs = await r.json();
+    const porFunc = {};
+    regs.forEach(reg => {
+      const id = reg.funcionario_id;
+      if (!porFunc[id]) porFunc[id] = { nome: reg.funcionario_nome, mat: reg.funcionario_matricula, dias: 0, trab: 0, faltas: 0, saldo: 0 };
+      const f = porFunc[id];
+      f.saldo += saldoReg(reg);
+      if (reg.tipo === 'falta') f.faltas++;
+      else if (!reg.tipo) { const h = calcHoras(reg); if (h !== null) { f.dias++; f.trab += h; } }
+    });
+    const arr = Object.values(porFunc).sort((a, b) => a.nome.localeCompare(b.nome));
+    let totalSaldo = 0;
+    document.getElementById('tbBanco').innerHTML = arr.map(f => {
+      totalSaldo += f.saldo;
+      return `<tr>
+        <td>${f.nome}${f.mat ? ' (' + f.mat + ')' : ''}</td>
+        <td>${f.dias}</td><td>${fmtMin(f.trab)}</td><td>${f.faltas}</td>
+        <td><span class="badge ${f.saldo >= 0 ? 'on' : 'off'}">${fmtSaldo(f.saldo)}</span></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="5" style="text-align:center;color:#888;padding:20px">Nenhum registro no período.</td></tr>';
+    document.getElementById('resumoBanco').innerHTML = `
+      <div class="card"><b>${arr.length}</b><span>funcionários</span></div>
+      <div class="card"><b>${fmtSaldo(totalSaldo)}</b><span>saldo total do banco</span></div>`;
   } catch { aviso('Erro de conexão com o servidor.'); }
 }
 
