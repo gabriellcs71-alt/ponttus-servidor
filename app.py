@@ -11,8 +11,10 @@ from functools import wraps
 app = Flask(__name__)
 CORS(app)
 
-DB          = os.environ.get('DB_PATH', 'ponto.db')
-ADMIN_KEY   = os.environ.get('ADMIN_API_KEY', '')  # Defina esta var para proteger rotas admin
+DB           = os.environ.get('DB_PATH', 'ponto.db')
+ADMIN_KEY    = os.environ.get('ADMIN_API_KEY', '')  # Defina esta var para proteger rotas admin
+DATABASE_URL = os.environ.get('DATABASE_URL', '')   # Render injeta isto ao linkar um Postgres
+USE_PG       = bool(DATABASE_URL)                    # Postgres em produção, SQLite local
 
 # Rate limiting simples em memória: {ip: [timestamps]}
 _login_attempts: dict = {}
@@ -21,16 +23,91 @@ LOGIN_WINDOW = 60  # segundos
 
 TOKEN_VALIDADE_DIAS = 90  # token expira após 90 dias sem uso
 
-# ── BANCO DE DADOS ─────────────────────────────────────
-def get_db():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    return conn
+if USE_PG:
+    import psycopg
+    from psycopg.rows import dict_row
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
+else:
+    INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 
-def init_db():
-    conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS funcionarios (
+# Expressões de data/hora por backend — ambas produzem ISO 'YYYY-MM-DD HH:MM:SS' (UTC),
+# garantindo que comparações por texto e o formato de saída sejam idênticos nos dois bancos.
+if USE_PG:
+    NOW_SQL    = "to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS')"
+    CUTOFF_SQL = ("to_char((now() - interval '%d days') at time zone 'utc',"
+                  "'YYYY-MM-DD HH24:MI:SS')") % TOKEN_VALIDADE_DIAS
+else:
+    NOW_SQL    = "datetime('now')"
+    CUTOFF_SQL = "datetime('now','-%d days')" % TOKEN_VALIDADE_DIAS
+
+# ── BANCO DE DADOS ─────────────────────────────────────
+class _Conn:
+    """Adaptador fino: mesma API (.execute(...).fetchone()/fetchall(), .commit(),
+    .rollback(), .close()) funcionando tanto em SQLite quanto em Postgres.
+    Em Postgres, traduz os placeholders '?' para '%s' automaticamente."""
+    def __init__(self):
+        if USE_PG:
+            self._c = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        else:
+            self._c = sqlite3.connect(DB)
+            self._c.row_factory = sqlite3.Row
+
+    def execute(self, sql, params=()):
+        if USE_PG:
+            cur = self._c.cursor()
+            cur.execute(sql.replace('?', '%s'), tuple(params) or None)
+            return cur
+        return self._c.execute(sql, params)
+
+    def commit(self):
+        self._c.commit()
+
+    def rollback(self):
+        self._c.rollback()
+
+    def close(self):
+        self._c.close()
+
+def get_db():
+    return _Conn()
+
+def _schema_sql():
+    """DDL específico do backend. Datas/timestamps são TEXT (ISO) em ambos."""
+    if USE_PG:
+        return [
+            """CREATE TABLE IF NOT EXISTS funcionarios (
+                id SERIAL PRIMARY KEY,
+                nome TEXT NOT NULL,
+                usuario TEXT UNIQUE NOT NULL,
+                senha_hash TEXT NOT NULL,
+                matricula TEXT DEFAULT '',
+                cargo TEXT DEFAULT '',
+                ativo INTEGER DEFAULT 1,
+                criado_em TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
+            )""",
+            """CREATE TABLE IF NOT EXISTS registros (
+                id SERIAL PRIMARY KEY,
+                funcionario_id INTEGER NOT NULL REFERENCES funcionarios(id),
+                data TEXT NOT NULL,
+                cidade TEXT,
+                entrada TEXT,
+                almoco_inicio TEXT,
+                almoco_fim TEXT,
+                saida TEXT,
+                observacao TEXT,
+                enviado_em TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
+            )""",
+            """CREATE TABLE IF NOT EXISTS tokens (
+                token TEXT PRIMARY KEY,
+                funcionario_id INTEGER NOT NULL REFERENCES funcionarios(id),
+                criado_em TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS')),
+                ultimo_uso TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
+            )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_func_data
+                ON registros(funcionario_id, data)""",
+        ]
+    return [
+        """CREATE TABLE IF NOT EXISTS funcionarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT NOT NULL,
             usuario TEXT UNIQUE NOT NULL,
@@ -39,11 +116,11 @@ def init_db():
             cargo TEXT DEFAULT '',
             ativo INTEGER DEFAULT 1,
             criado_em TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS registros (
+        )""",
+        """CREATE TABLE IF NOT EXISTS registros (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             funcionario_id INTEGER NOT NULL,
-            data TEXT NOT NULL,              -- ISO: YYYY-MM-DD
+            data TEXT NOT NULL,
             cidade TEXT,
             entrada TEXT,
             almoco_inicio TEXT,
@@ -52,24 +129,30 @@ def init_db():
             observacao TEXT,
             enviado_em TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
-        );
-        CREATE TABLE IF NOT EXISTS tokens (
+        )""",
+        """CREATE TABLE IF NOT EXISTS tokens (
             token TEXT PRIMARY KEY,
             funcionario_id INTEGER NOT NULL,
             criado_em TEXT DEFAULT (datetime('now')),
             ultimo_uso TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_func_data
-            ON registros(funcionario_id, data);
-    """)
+        )""",
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_func_data
+            ON registros(funcionario_id, data)""",
+    ]
 
-    # Migração: converte datas antigas DD/MM/YYYY para ISO YYYY-MM-DD
-    conn.execute("""
-        UPDATE registros
-        SET data = substr(data,7,4) || '-' || substr(data,4,2) || '-' || substr(data,1,2)
-        WHERE data LIKE '__/__/____'
-    """)
+def init_db():
+    conn = get_db()
+    for stmt in _schema_sql():
+        conn.execute(stmt)
+
+    # Migração (somente SQLite): converte datas antigas DD/MM/YYYY para ISO YYYY-MM-DD
+    if not USE_PG:
+        conn.execute("""
+            UPDATE registros
+            SET data = substr(data,7,4) || '-' || substr(data,4,2) || '-' || substr(data,1,2)
+            WHERE data LIKE '__/__/____'
+        """)
 
     # Admin: usa env var se definida, senão gera senha aleatória na primeira execução
     senha_admin = os.environ.get('ADMIN_PASSWORD', '')
@@ -165,12 +248,12 @@ def _funcionario_do_token():
         return None
     conn = get_db()
     row = conn.execute(
-        """SELECT funcionario_id FROM tokens
-           WHERE token=? AND ultimo_uso > datetime('now', ?)""",
-        (token, f'-{TOKEN_VALIDADE_DIAS} days')
+        f"""SELECT funcionario_id FROM tokens
+           WHERE token=? AND ultimo_uso > {CUTOFF_SQL}""",
+        (token,)
     ).fetchone()
     if row:
-        conn.execute("UPDATE tokens SET ultimo_uso=datetime('now') WHERE token=?", (token,))
+        conn.execute(f"UPDATE tokens SET ultimo_uso={NOW_SQL} WHERE token=?", (token,))
         conn.commit()
     conn.close()
     return row['funcionario_id'] if row else None
@@ -212,8 +295,8 @@ def login():
         )
         # Limpa tokens expirados do funcionário
         conn.execute(
-            "DELETE FROM tokens WHERE funcionario_id=? AND ultimo_uso < datetime('now', ?)",
-            (row['id'], f'-{TOKEN_VALIDADE_DIAS} days')
+            f"DELETE FROM tokens WHERE funcionario_id=? AND ultimo_uso < {CUTOFF_SQL}",
+            (row['id'],)
         )
         conn.commit()
         conn.close()
@@ -253,7 +336,7 @@ def salvar_registros(auth_fid):
             str(reg.get('observacao')or '')[:500],
         )
 
-        conn.execute("""
+        conn.execute(f"""
             INSERT INTO registros (funcionario_id, data, cidade, entrada,
                 almoco_inicio, almoco_fim, saida, observacao)
             VALUES (?,?,?,?,?,?,?,?)
@@ -261,7 +344,7 @@ def salvar_registros(auth_fid):
                 cidade=excluded.cidade, entrada=excluded.entrada,
                 almoco_inicio=excluded.almoco_inicio, almoco_fim=excluded.almoco_fim,
                 saida=excluded.saida, observacao=excluded.observacao,
-                enviado_em=datetime('now')
+                enviado_em={NOW_SQL}
         """, (funcionario_id, data_iso, *campos))
         salvos += 1
 
@@ -334,7 +417,8 @@ def criar_funcionario():
         )
         conn.commit()
         return jsonify({"ok": True})
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
+        conn.rollback()
         return jsonify({"ok": False, "erro": "Usuário já existe"}), 409
     finally:
         conn.close()
@@ -407,7 +491,7 @@ def painel():
 
 @app.route('/ping', methods=['GET'])
 def ping():
-    return jsonify({"ok": True, "msg": "Ponttus servidor online"})
+    return jsonify({"ok": True, "msg": "Ponttus servidor online", "db": "postgres" if USE_PG else "sqlite"})
 
 # Garante schema também sob gunicorn (Render), não só em execução direta
 init_db()
