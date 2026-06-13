@@ -83,6 +83,7 @@
       <input type="month" id="filtroMes">
       <button class="btn" onclick="carregarRegistros()">Buscar</button>
       <button class="btn" onclick="abrirAbono()">+ Lançar Abono</button>
+      <button class="btn" onclick="exportarExcel()">Exportar Excel</button>
       <button class="btn sec" onclick="exportarCSV()">Exportar CSV</button>
     </div>
     <div class="resumo" id="resumoReg"></div>
@@ -100,6 +101,7 @@
       <input type="month" id="bancoMes">
       <button class="btn" onclick="carregarBanco()">Calcular</button>
       <button class="btn sec" onclick="document.getElementById('bancoMes').value='';carregarBanco()">Acumulado (tudo)</button>
+      <button class="btn" onclick="exportarBancoExcel()">Exportar Excel</button>
       <span style="font-size:12px;color:#888;margin-left:auto">Jornada: 8h48/dia · seg a sex · falta = −8h48</span>
     </div>
     <div class="resumo" id="resumoBanco"></div>
@@ -158,9 +160,10 @@
   </form>
 </dialog>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 const API = location.origin;
-let funcionarios = [], registros = [];
+let funcionarios = [], registros = [], bancoDados = [];
 const ABONO_LABEL = { falta: 'Falta', atestado: 'Atestado', folga: 'Folga', feriado: 'Feriado' };
 
 function chave() { return localStorage.getItem('adminKey') || ''; }
@@ -319,6 +322,7 @@ async function carregarBanco() {
       else if (!reg.tipo) { const h = calcHoras(reg); if (h !== null) { f.dias++; f.trab += h; } }
     });
     const arr = Object.values(porFunc).sort((a, b) => a.nome.localeCompare(b.nome));
+    bancoDados = arr;
     let totalSaldo = 0;
     document.getElementById('tbBanco').innerHTML = arr.map(f => {
       totalSaldo += f.saldo;
@@ -365,6 +369,38 @@ async function removerAbono(fid, data) {
   const d = await r.json();
   if (d.ok) { aviso('Abono removido.', true); carregarRegistros(); }
   else aviso(d.erro || 'Erro ao remover.');
+}
+
+function exportarExcel() {
+  if (!registros.length) { aviso('Nenhum registro para exportar.'); return; }
+  const aoa = [['Funcionário','Matrícula','Data','Situação','Cidade','Entrada','Almoço Início','Almoço Fim','Saída','Horas','Observação']];
+  registros.forEach(r => {
+    const m = calcHoras(r);
+    const situ = r.tipo ? (ABONO_LABEL[r.tipo] || r.tipo) : 'Trabalho';
+    aoa.push([r.funcionario_nome, r.funcionario_matricula || '', fmtDataBR(r.data), situ, r.cidade || '',
+      r.entrada || '', r.almoco_inicio || '', r.almoco_fim || '', r.saida || '',
+      m !== null ? fmtMin(m) : '', r.observacao || '']);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:22},{wch:10},{wch:11},{wch:11},{wch:18},{wch:8},{wch:11},{wch:10},{wch:8},{wch:8},{wch:24}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Ponto');
+  const mes = document.getElementById('filtroMes').value || 'todos';
+  XLSX.writeFile(wb, `ponto_${mes}.xlsx`);
+}
+
+function exportarBancoExcel() {
+  if (!bancoDados.length) { aviso('Calcule o banco de horas primeiro.'); return; }
+  const aoa = [['Funcionário','Dias trabalhados','Horas trabalhadas','Faltas','Saldo']];
+  bancoDados.forEach(f => aoa.push([
+    f.nome + (f.mat ? ' (' + f.mat + ')' : ''), f.dias, fmtMin(f.trab), f.faltas, fmtSaldo(f.saldo),
+  ]));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:24},{wch:16},{wch:16},{wch:8},{wch:12}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Banco de Horas');
+  const mes = document.getElementById('bancoMes').value || 'acumulado';
+  XLSX.writeFile(wb, `banco_horas_${mes}.xlsx`);
 }
 
 function exportarCSV() {
