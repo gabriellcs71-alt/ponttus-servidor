@@ -3,116 +3,188 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ponttus — Painel Administrativo</title>
+<title>GestLog — Ponttus · Controle de Ponto</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
-    --vermelho: #B71C1C; --vermelho-m: #C62828; --vermelho-l: #FFEBEE;
-    --rosa: #FFCDD2; --cinza: #F5F5F5; --texto: #333;
+    --bg:#080812; --panel:#0d0d22; --panel2:#11132b;
+    --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.12);
+    --txt:#e8ecf4; --txt2:#8da0c4; --txt3:#4e5a78;
+    --red:#e2554f; --red-soft:rgba(226,85,79,.12); --red-bd:rgba(226,85,79,.3);
+    --green:#5CF2C8;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
-  body { background: var(--cinza); color: var(--texto); }
-  header { background: var(--vermelho); color: #fff; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; }
-  header h1 { font-size: 20px; }
-  header small { opacity: .8; }
-  .tabs { display: flex; gap: 8px; padding: 12px 24px 0; }
-  .tab { padding: 10px 20px; border: none; border-radius: 8px 8px 0 0; background: var(--rosa); color: var(--vermelho); font-weight: bold; cursor: pointer; font-size: 14px; }
-  .tab.ativa { background: #fff; }
-  main { background: #fff; margin: 0 24px 24px; padding: 20px; border-radius: 0 8px 8px 8px; min-height: 60vh; }
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; }
+  body {
+    background:
+      radial-gradient(ellipse 70% 50% at 12% 0%, rgba(226,85,79,.06) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 100% 100%, rgba(120,40,40,.05) 0%, transparent 60%),
+      var(--bg);
+    color: var(--txt); min-height: 100vh;
+  }
+  .shell { display: flex; flex-direction: column; min-height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 28px; border-bottom: 1px solid var(--line);
+    background: rgba(8,8,18,.85); backdrop-filter: blur(8px);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark { width: 32px; height: 32px; border-radius: 8px; background: #1e2440; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: #8da0c4; }
+  .crumb { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .crumb .g { color: var(--txt3); }
+  .crumb .sep { color: #2e344a; }
+  .pmark { width: 22px; height: 22px; border-radius: 6px; background: var(--red-soft); border: 1px solid var(--red-bd); color: var(--red); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; }
+  .crumb .mod { font-weight: 700; color: #d0d8ef; }
+  .filial { font-size: 10px; font-weight: 700; color: var(--red); background: var(--red-soft); padding: 2px 8px; border-radius: 5px; letter-spacing: .5px; }
+  .hdr-right { display: flex; align-items: center; gap: 14px; }
+  .hdr-link { font-size: 12px; color: var(--txt3); text-decoration: none; }
+  .hdr-link:hover { color: var(--txt); }
+
+  .body { flex: 1; display: flex; }
+  aside { width: 210px; border-right: 1px solid var(--line); padding: 18px 14px; display: flex; flex-direction: column; gap: 4px; }
+  .nav-label { font-size: 10px; color: #3d4860; text-transform: uppercase; letter-spacing: 1.5px; padding: 6px 12px; }
+  .tab { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 10px 13px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--txt2); font-size: 13px; font-weight: 500; cursor: pointer; transition: .15s; }
+  .tab:hover { background: rgba(255,255,255,.04); color: var(--txt); }
+  .tab.ativa { background: var(--red-soft); border-color: var(--red-bd); color: #f0a39f; font-weight: 600; }
+  .side-foot { margin-top: auto; font-size: 10px; color: #2e344a; padding: 10px 12px; }
+
+  main { flex: 1; padding: 24px 28px; min-width: 0; }
+
+  .barra { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; align-items: center; }
+  .barra label { font-size: 12px; color: var(--txt2); font-weight: 500; }
+  .btn { background: var(--red); color: #fff; border: none; border-radius: 8px; padding: 9px 15px; cursor: pointer; font-weight: 600; font-size: 12px; transition: .15s; }
+  .btn:hover { filter: brightness(1.08); }
+  .btn.sec { background: transparent; color: var(--txt2); border: 1px solid var(--line2); }
+  .btn.sec:hover { color: var(--txt); border-color: rgba(255,255,255,.25); }
+  input, select { padding: 9px 11px; border: 1px solid var(--line2); border-radius: 8px; font-size: 13px; background: var(--panel2); color: var(--txt); }
+  input:focus, select:focus { outline: none; border-color: var(--red-bd); }
+
+  .resumo { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card b { display: block; font-size: 24px; font-weight: 700; color: #d0d8ef; }
+  .card span { font-size: 11px; color: var(--txt3); }
+
+  .tbl-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .tbl-scroll { max-height: 62vh; overflow: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { background: var(--vermelho-l); color: var(--vermelho); text-align: left; padding: 8px; position: sticky; top: 0; }
-  td { padding: 8px; border-bottom: 1px solid #eee; }
-  tr:hover td { background: var(--vermelho-l); }
-  .btn { background: var(--vermelho); color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-weight: bold; font-size: 13px; }
-  .btn.sec { background: #fff; color: var(--vermelho); border: 1.5px solid var(--vermelho); }
-  .btn:hover { opacity: .9; }
-  .barra { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
-  input, select { padding: 8px 10px; border: 1.5px solid var(--rosa); border-radius: 6px; font-size: 13px; }
-  .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
-  .badge.on  { background: #E8F5E9; color: #2E7D32; }
-  .badge.off { background: #FFEBEE; color: var(--vermelho); }
-  .badge.trabalho { background: #F5F5F5; color: #666; }
-  .badge.falta    { background: #EEEEEE; color: #424242; }
-  .badge.atestado { background: #E3F2FD; color: #1565C0; }
-  .badge.folga    { background: #E0F7FA; color: #00838F; }
-  .badge.feriado  { background: #FFF3E0; color: #E65100; }
-  .lnk { background: none; border: none; color: var(--vermelho); cursor: pointer; font-size: 12px; text-decoration: underline; padding: 0; }
-  dialog { border: none; border-radius: 12px; padding: 24px; width: 380px; box-shadow: 0 8px 40px rgba(0,0,0,.3); }
-  dialog::backdrop { background: rgba(0,0,0,.5); }
-  dialog h2 { color: var(--vermelho); font-size: 16px; margin-bottom: 14px; }
-  dialog label { display: block; font-size: 12px; font-weight: bold; color: var(--vermelho); margin: 10px 0 4px; }
+  th { background: rgba(255,255,255,.03); color: #5a6480; text-align: left; padding: 11px 14px; position: sticky; top: 0; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+  td { padding: 11px 14px; border-top: 1px solid var(--line); color: var(--txt2); }
+  td b { color: #d0d8ef; font-weight: 600; font-family: monospace; }
+  tr:hover td { background: rgba(226,85,79,.05); }
+
+  .badge { padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+  .badge.on  { background: rgba(92,242,200,.12); color: var(--green); font-family: monospace; }
+  .badge.off { background: var(--red-soft); color: #f0a39f; font-family: monospace; }
+  .badge.trabalho { background: rgba(255,255,255,.05); color: var(--txt2); }
+  .badge.falta    { background: rgba(255,255,255,.07); color: #c0c8da; }
+  .badge.atestado { background: rgba(74,127,212,.15); color: #7fb0ee; }
+  .badge.folga    { background: rgba(0,180,180,.13); color: #4fd6d6; }
+  .badge.feriado  { background: rgba(245,158,11,.14); color: #f5b342; }
+  .lnk { background: none; border: none; color: var(--red); cursor: pointer; font-size: 12px; text-decoration: underline; padding: 0; }
+
+  dialog { border: none; border-radius: 14px; padding: 24px; width: 400px; background: var(--panel); color: var(--txt); box-shadow: 0 20px 70px rgba(0,0,0,.6); border: 1px solid var(--line2); }
+  dialog::backdrop { background: rgba(4,4,10,.7); }
+  dialog h2 { color: #d0d8ef; font-size: 16px; margin-bottom: 16px; }
+  dialog label { display: block; font-size: 11px; font-weight: 600; color: var(--txt2); margin: 12px 0 5px; }
   dialog input, dialog select { width: 100%; }
-  .dlg-acoes { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; }
-  .resumo { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
-  .card { background: var(--vermelho-l); border-radius: 8px; padding: 12px 20px; }
-  .card b { display: block; font-size: 22px; color: var(--vermelho); }
-  .card span { font-size: 11px; color: var(--vermelho-m); }
-  #msg { padding: 10px; border-radius: 6px; margin-bottom: 12px; display: none; font-size: 13px; }
-  #msg.ok  { background: #E8F5E9; color: #2E7D32; display: block; }
-  #msg.err { background: var(--vermelho-l); color: var(--vermelho); display: block; }
+  .dlg-acoes { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+
+  #msg { padding: 11px 14px; border-radius: 9px; margin-bottom: 14px; display: none; font-size: 13px; }
+  #msg.ok  { background: rgba(92,242,200,.1); color: var(--green); display: block; border: 1px solid rgba(92,242,200,.25); }
+  #msg.err { background: var(--red-soft); color: #f0a39f; display: block; border: 1px solid var(--red-bd); }
+
+  @media (max-width: 760px) {
+    .body { flex-direction: column; }
+    aside { width: 100%; flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--line); }
+    .nav-label, .side-foot { display: none; }
+    .tab { width: auto; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <div><h1>Ponttus</h1><small>Painel Administrativo — Controle de Ponto</small></div>
-  <button class="btn sec" style="background:transparent;color:#fff;border-color:#fff" onclick="trocarChave()">Chave Admin</button>
-</header>
+<div class="shell">
 
-<div class="tabs">
-  <button class="tab ativa" id="tabFunc" onclick="mostrar('func')">Funcionários</button>
-  <button class="tab" id="tabReg" onclick="mostrar('reg')">Registros de Ponto</button>
-  <button class="tab" id="tabBanco" onclick="mostrar('banco')">Banco de Horas</button>
+  <header>
+    <div class="brand">
+      <div class="brand-mark">GL</div>
+      <div class="crumb">
+        <span class="g">GestLog</span>
+        <span class="sep">/</span>
+        <span class="pmark">P</span>
+        <span class="mod">Ponttus · Controle de Ponto</span>
+        <span class="filial">ALFENAS</span>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <a class="hdr-link" href="http://localhost:5678/">← Central GestLog</a>
+      <button class="btn sec" onclick="trocarChave()">Chave Admin</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <aside>
+      <div class="nav-label">Gestão</div>
+      <button class="tab ativa" id="tabFunc" onclick="mostrar('func')">Funcionários</button>
+      <button class="tab" id="tabReg" onclick="mostrar('reg')">Registros de ponto</button>
+      <button class="tab" id="tabBanco" onclick="mostrar('banco')">Banco de horas</button>
+      <div class="side-foot">GestLog · uso interno</div>
+    </aside>
+
+    <main>
+      <div id="msg"></div>
+
+      <section id="secFunc">
+        <div class="barra">
+          <button class="btn" onclick="abrirNovo()">+ Novo Funcionário</button>
+          <button class="btn sec" onclick="carregarFuncionarios()">Atualizar</button>
+        </div>
+        <div class="tbl-wrap"><div class="tbl-scroll">
+          <table>
+            <thead><tr><th>Nome</th><th>Usuário</th><th>Matrícula</th><th>Cargo</th><th>Status</th><th></th></tr></thead>
+            <tbody id="tbFunc"></tbody>
+          </table>
+        </div></div>
+      </section>
+
+      <section id="secReg" style="display:none">
+        <div class="barra">
+          <label>Mês:</label>
+          <input type="month" id="filtroMes">
+          <button class="btn" onclick="carregarRegistros()">Buscar</button>
+          <button class="btn" onclick="abrirAbono()">+ Lançar Abono</button>
+          <button class="btn" onclick="exportarExcel()">Exportar Excel</button>
+          <button class="btn sec" onclick="exportarCSV()">Exportar CSV</button>
+        </div>
+        <div class="resumo" id="resumoReg"></div>
+        <div class="tbl-wrap"><div class="tbl-scroll">
+          <table>
+            <thead><tr><th>Funcionário</th><th>Data</th><th>Situação</th><th>Cidade</th><th>Entrada</th><th>Almoço</th><th>Saída</th><th>Horas</th><th></th></tr></thead>
+            <tbody id="tbReg"></tbody>
+          </table>
+        </div></div>
+      </section>
+
+      <section id="secBanco" style="display:none">
+        <div class="barra">
+          <label>Mês:</label>
+          <input type="month" id="bancoMes">
+          <button class="btn" onclick="carregarBanco()">Calcular</button>
+          <button class="btn sec" onclick="document.getElementById('bancoMes').value='';carregarBanco()">Acumulado (tudo)</button>
+          <button class="btn" onclick="exportarBancoExcel()">Exportar Excel</button>
+          <span style="font-size:12px;color:var(--txt3);margin-left:auto">Jornada: 8h48/dia · seg a sex · falta = −8h48</span>
+        </div>
+        <div class="resumo" id="resumoBanco"></div>
+        <div class="tbl-wrap"><div class="tbl-scroll">
+          <table>
+            <thead><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Faltas</th><th>Saldo do banco</th></tr></thead>
+            <tbody id="tbBanco"></tbody>
+          </table>
+        </div></div>
+      </section>
+    </main>
+  </div>
+
 </div>
-
-<main>
-  <div id="msg"></div>
-
-  <section id="secFunc">
-    <div class="barra">
-      <button class="btn" onclick="abrirNovo()">+ Novo Funcionário</button>
-      <button class="btn sec" onclick="carregarFuncionarios()">Atualizar</button>
-    </div>
-    <table>
-      <thead><tr><th>Nome</th><th>Usuário</th><th>Matrícula</th><th>Cargo</th><th>Status</th><th></th></tr></thead>
-      <tbody id="tbFunc"></tbody>
-    </table>
-  </section>
-
-  <section id="secReg" style="display:none">
-    <div class="barra">
-      <label style="font-size:13px;font-weight:bold;color:var(--vermelho)">Mês:</label>
-      <input type="month" id="filtroMes">
-      <button class="btn" onclick="carregarRegistros()">Buscar</button>
-      <button class="btn" onclick="abrirAbono()">+ Lançar Abono</button>
-      <button class="btn" onclick="exportarExcel()">Exportar Excel</button>
-      <button class="btn sec" onclick="exportarCSV()">Exportar CSV</button>
-    </div>
-    <div class="resumo" id="resumoReg"></div>
-    <div style="max-height:60vh;overflow:auto">
-      <table>
-        <thead><tr><th>Funcionário</th><th>Data</th><th>Situação</th><th>Cidade</th><th>Entrada</th><th>Almoço</th><th>Saída</th><th>Horas</th><th></th></tr></thead>
-        <tbody id="tbReg"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section id="secBanco" style="display:none">
-    <div class="barra">
-      <label style="font-size:13px;font-weight:bold;color:var(--vermelho)">Mês:</label>
-      <input type="month" id="bancoMes">
-      <button class="btn" onclick="carregarBanco()">Calcular</button>
-      <button class="btn sec" onclick="document.getElementById('bancoMes').value='';carregarBanco()">Acumulado (tudo)</button>
-      <button class="btn" onclick="exportarBancoExcel()">Exportar Excel</button>
-      <span style="font-size:12px;color:#888;margin-left:auto">Jornada: 8h48/dia · seg a sex · falta = −8h48</span>
-    </div>
-    <div class="resumo" id="resumoBanco"></div>
-    <div style="max-height:60vh;overflow:auto">
-      <table>
-        <thead><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Faltas</th><th>Saldo do banco</th></tr></thead>
-        <tbody id="tbBanco"></tbody>
-      </table>
-    </div>
-  </section>
-</main>
 
 <dialog id="dlgAbono">
   <h2>Lançar Abono</h2>
@@ -128,7 +200,7 @@
       <option value="folga">Folga</option>
       <option value="feriado">Feriado</option>
     </select>
-    <p style="font-size:11px;color:#888;margin-top:10px">O abono prevalece sobre o dia: as horas lançadas pelo funcionário naquela data serão zeradas.</p>
+    <p style="font-size:11px;color:var(--txt3);margin-top:10px">O abono prevalece sobre o dia: as horas lançadas pelo funcionário naquela data serão zeradas.</p>
     <div class="dlg-acoes">
       <button type="button" class="btn sec" onclick="dlgAbono.close()">Cancelar</button>
       <button type="submit" class="btn">Lançar</button>
@@ -331,7 +403,7 @@ async function carregarBanco() {
         <td>${f.dias}</td><td>${fmtMin(f.trab)}</td><td>${f.faltas}</td>
         <td><span class="badge ${f.saldo >= 0 ? 'on' : 'off'}">${fmtSaldo(f.saldo)}</span></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="5" style="text-align:center;color:#888;padding:20px">Nenhum registro no período.</td></tr>';
+    }).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--txt3);padding:20px">Nenhum registro no período.</td></tr>';
     document.getElementById('resumoBanco').innerHTML = `
       <div class="card"><b>${arr.length}</b><span>funcionários</span></div>
       <div class="card"><b>${fmtSaldo(totalSaldo)}</b><span>saldo total do banco</span></div>`;
@@ -423,6 +495,7 @@ function exportarCSV() {
 
 // Mês atual como padrão
 document.getElementById('filtroMes').value = new Date().toISOString().slice(0, 7);
+document.getElementById('bancoMes').value = new Date().toISOString().slice(0, 7);
 carregarFuncionarios();
 </script>
 </body>
