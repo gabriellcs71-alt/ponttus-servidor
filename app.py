@@ -23,6 +23,10 @@ LOGIN_WINDOW = 60  # segundos
 
 TOKEN_VALIDADE_DIAS = 90  # token expira após 90 dias sem uso
 
+# Tipos de "abono" que SOMENTE o admin pode lançar (funcionário nunca grava estes).
+# '' (vazio) = dia normal de trabalho, preenchido pelo próprio funcionário no app.
+ABONO_TIPOS = ('falta', 'atestado', 'folga', 'feriado')
+
 if USE_PG:
     import psycopg
     from psycopg.rows import dict_row
@@ -95,6 +99,7 @@ def _schema_sql():
                 almoco_fim TEXT,
                 saida TEXT,
                 observacao TEXT,
+                tipo TEXT DEFAULT '',
                 enviado_em TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
             )""",
             """CREATE TABLE IF NOT EXISTS tokens (
@@ -127,6 +132,7 @@ def _schema_sql():
             almoco_fim TEXT,
             saida TEXT,
             observacao TEXT,
+            tipo TEXT DEFAULT '',
             enviado_em TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
         )""",
@@ -153,6 +159,19 @@ def init_db():
             SET data = substr(data,7,4) || '-' || substr(data,4,2) || '-' || substr(data,1,2)
             WHERE data LIKE '__/__/____'
         """)
+
+    # Migração: garante a coluna 'tipo' em bancos criados antes desta feature.
+    try:
+        conn.execute("ALTER TABLE registros ADD COLUMN tipo TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        conn.rollback()  # coluna já existe
+
+    # Migração: feriado deixou de ser marcado pelo funcionário (observacao='FERIADO')
+    # e passou a ser um abono administrativo (tipo='feriado').
+    conn.execute(
+        "UPDATE registros SET tipo='feriado' WHERE observacao='FERIADO' AND (tipo='' OR tipo IS NULL)"
+    )
 
     # Admin: usa env var se definida, senão gera senha aleatória na primeira execução
     senha_admin = os.environ.get('ADMIN_PASSWORD', '')
@@ -336,15 +355,18 @@ def salvar_registros(auth_fid):
             str(reg.get('observacao')or '')[:500],
         )
 
+        # Funcionário só grava dia de trabalho (tipo=''); se o dia já é um abono
+        # lançado pelo admin, o WHERE impede a sobrescrita — o abono prevalece.
         conn.execute(f"""
             INSERT INTO registros (funcionario_id, data, cidade, entrada,
-                almoco_inicio, almoco_fim, saida, observacao)
-            VALUES (?,?,?,?,?,?,?,?)
+                almoco_inicio, almoco_fim, saida, observacao, tipo)
+            VALUES (?,?,?,?,?,?,?,?,'')
             ON CONFLICT(funcionario_id, data) DO UPDATE SET
                 cidade=excluded.cidade, entrada=excluded.entrada,
                 almoco_inicio=excluded.almoco_inicio, almoco_fim=excluded.almoco_fim,
                 saida=excluded.saida, observacao=excluded.observacao,
                 enviado_em={NOW_SQL}
+            WHERE registros.tipo='' OR registros.tipo IS NULL
         """, (funcionario_id, data_iso, *campos))
         salvos += 1
 
@@ -479,6 +501,49 @@ def admin_registros():
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
+
+@app.route('/admin/abono', methods=['POST'])
+@require_admin_key
+def admin_abono():
+    """Lança ou remove um abono (falta/atestado/folga/feriado) num dia.
+    Somente o admin. O abono prevalece: zera as horas trabalhadas do dia.
+    Enviar tipo='' remove o abono (o dia volta a ficar vazio)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        fid = int(data.get('funcionario_id'))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "erro": "funcionario_id inválido"}), 400
+
+    data_iso = normalizar_data(data.get('data', ''))
+    if not data_iso:
+        return jsonify({"ok": False, "erro": "Data inválida (use YYYY-MM-DD)"}), 400
+
+    tipo = str(data.get('tipo', '') or '').strip().lower()
+    if tipo and tipo not in ABONO_TIPOS:
+        return jsonify({"ok": False, "erro": "Tipo inválido"}), 400
+
+    conn = get_db()
+    func = conn.execute("SELECT id FROM funcionarios WHERE id=?", (fid,)).fetchone()
+    if not func:
+        conn.close()
+        return jsonify({"ok": False, "erro": "Funcionário não encontrado"}), 404
+
+    if tipo == '':
+        # Remove o abono: apaga o registro do dia (volta a ficar vazio).
+        conn.execute("DELETE FROM registros WHERE funcionario_id=? AND data=?", (fid, data_iso))
+    else:
+        # Marca o abono zerando horas/cidade — o abono prevalece sobre o trabalho.
+        conn.execute(f"""
+            INSERT INTO registros (funcionario_id, data, cidade, entrada,
+                almoco_inicio, almoco_fim, saida, observacao, tipo)
+            VALUES (?,?,'','','','','','',?)
+            ON CONFLICT(funcionario_id, data) DO UPDATE SET
+                tipo=excluded.tipo, cidade='', entrada='', almoco_inicio='',
+                almoco_fim='', saida='', enviado_em={NOW_SQL}
+        """, (fid, data_iso, tipo))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "tipo": tipo})
 
 # ── PAINEL ADMIN (WEB) ────────────────────────────────
 @app.route('/')

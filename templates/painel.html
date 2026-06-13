@@ -30,6 +30,12 @@
   .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
   .badge.on  { background: #E8F5E9; color: #2E7D32; }
   .badge.off { background: #FFEBEE; color: var(--vermelho); }
+  .badge.trabalho { background: #F5F5F5; color: #666; }
+  .badge.falta    { background: #EEEEEE; color: #424242; }
+  .badge.atestado { background: #E3F2FD; color: #1565C0; }
+  .badge.folga    { background: #E0F7FA; color: #00838F; }
+  .badge.feriado  { background: #FFF3E0; color: #E65100; }
+  .lnk { background: none; border: none; color: var(--vermelho); cursor: pointer; font-size: 12px; text-decoration: underline; padding: 0; }
   dialog { border: none; border-radius: 12px; padding: 24px; width: 380px; box-shadow: 0 8px 40px rgba(0,0,0,.3); }
   dialog::backdrop { background: rgba(0,0,0,.5); }
   dialog h2 { color: var(--vermelho); font-size: 16px; margin-bottom: 14px; }
@@ -75,17 +81,40 @@
       <label style="font-size:13px;font-weight:bold;color:var(--vermelho)">Mês:</label>
       <input type="month" id="filtroMes">
       <button class="btn" onclick="carregarRegistros()">Buscar</button>
+      <button class="btn" onclick="abrirAbono()">+ Lançar Abono</button>
       <button class="btn sec" onclick="exportarCSV()">Exportar CSV</button>
     </div>
     <div class="resumo" id="resumoReg"></div>
     <div style="max-height:60vh;overflow:auto">
       <table>
-        <thead><tr><th>Funcionário</th><th>Data</th><th>Cidade</th><th>Entrada</th><th>Almoço</th><th>Saída</th><th>Horas</th><th>Obs.</th></tr></thead>
+        <thead><tr><th>Funcionário</th><th>Data</th><th>Situação</th><th>Cidade</th><th>Entrada</th><th>Almoço</th><th>Saída</th><th>Horas</th><th></th></tr></thead>
         <tbody id="tbReg"></tbody>
       </table>
     </div>
   </section>
 </main>
+
+<dialog id="dlgAbono">
+  <h2>Lançar Abono</h2>
+  <form id="formAbono" onsubmit="salvarAbono(event)">
+    <label>Funcionário</label>
+    <select id="aFunc" required></select>
+    <label>Data</label>
+    <input type="date" id="aData" required>
+    <label>Tipo de abono</label>
+    <select id="aTipo" required>
+      <option value="falta">Falta</option>
+      <option value="atestado">Atestado</option>
+      <option value="folga">Folga</option>
+      <option value="feriado">Feriado</option>
+    </select>
+    <p style="font-size:11px;color:#888;margin-top:10px">O abono prevalece sobre o dia: as horas lançadas pelo funcionário naquela data serão zeradas.</p>
+    <div class="dlg-acoes">
+      <button type="button" class="btn sec" onclick="dlgAbono.close()">Cancelar</button>
+      <button type="submit" class="btn">Lançar</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="dlgFunc">
   <h2 id="dlgTitulo">Novo Funcionário</h2>
@@ -114,6 +143,7 @@
 <script>
 const API = location.origin;
 let funcionarios = [], registros = [];
+const ABONO_LABEL = { falta: 'Falta', atestado: 'Atestado', folga: 'Folga', feriado: 'Feriado' };
 
 function chave() { return localStorage.getItem('adminKey') || ''; }
 function trocarChave() {
@@ -215,11 +245,18 @@ async function carregarRegistros() {
       const m = calcHoras(reg);
       if (m !== null) { totalMin += m; comHoras++; }
       const almoco = (reg.almoco_inicio && reg.almoco_fim) ? `${reg.almoco_inicio}–${reg.almoco_fim}` : '—';
+      const tipo = reg.tipo || '';
+      const situ = tipo
+        ? `<span class="badge ${tipo}">${ABONO_LABEL[tipo] || tipo}</span>`
+        : `<span class="badge trabalho">Trabalho</span>`;
+      const acao = tipo
+        ? `<button class="lnk" onclick="removerAbono(${reg.funcionario_id},'${reg.data}')">remover</button>`
+        : '';
       return `<tr>
         <td>${reg.funcionario_nome}${reg.funcionario_matricula ? ' (' + reg.funcionario_matricula + ')' : ''}</td>
-        <td>${fmtDataBR(reg.data)}</td><td>${reg.cidade || '—'}</td>
+        <td>${fmtDataBR(reg.data)}</td><td>${situ}</td><td>${reg.cidade || '—'}</td>
         <td>${reg.entrada || '—'}</td><td>${almoco}</td><td>${reg.saida || '—'}</td>
-        <td><b>${m !== null ? fmtMin(m) : '—'}</b></td><td>${reg.observacao || ''}</td>
+        <td><b>${m !== null ? fmtMin(m) : '—'}</b></td><td>${acao}</td>
       </tr>`;
     }).join('');
     document.getElementById('resumoReg').innerHTML = `
@@ -229,12 +266,46 @@ async function carregarRegistros() {
   } catch { aviso('Erro de conexão com o servidor.'); }
 }
 
+function abrirAbono() {
+  if (!funcionarios.length) { aviso('Carregue os funcionários primeiro (aba Funcionários).'); return; }
+  const sel = document.getElementById('aFunc');
+  sel.innerHTML = funcionarios.map(f => `<option value="${f.id}">${f.nome}${f.matricula ? ' (' + f.matricula + ')' : ''}</option>`).join('');
+  document.getElementById('aData').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('aTipo').value = 'falta';
+  dlgAbono.showModal();
+}
+
+async function salvarAbono(ev) {
+  ev.preventDefault();
+  const body = {
+    funcionario_id: parseInt(document.getElementById('aFunc').value, 10),
+    data: document.getElementById('aData').value,
+    tipo: document.getElementById('aTipo').value,
+  };
+  const r = await fetch(`${API}/admin/abono`, { method: 'POST', headers: hdrs(), body: JSON.stringify(body) });
+  const d = await r.json();
+  if (d.ok) { dlgAbono.close(); aviso('Abono lançado!', true); carregarRegistros(); }
+  else aviso(d.erro || 'Erro ao lançar abono.');
+}
+
+async function removerAbono(fid, data) {
+  if (!confirm('Remover este abono? O dia voltará a ficar vazio.')) return;
+  const r = await fetch(`${API}/admin/abono`, {
+    method: 'POST', headers: hdrs(),
+    body: JSON.stringify({ funcionario_id: fid, data, tipo: '' }),
+  });
+  const d = await r.json();
+  if (d.ok) { aviso('Abono removido.', true); carregarRegistros(); }
+  else aviso(d.erro || 'Erro ao remover.');
+}
+
 function exportarCSV() {
   if (!registros.length) { aviso('Nenhum registro para exportar.'); return; }
-  const linhas = [['Funcionario','Matricula','Data','Cidade','Entrada','Almoco Inicio','Almoco Fim','Saida','Horas','Observacao']];
+  const linhas = [['Funcionario','Matricula','Data','Situacao','Cidade','Entrada','Almoco Inicio','Almoco Fim','Saida','Horas','Observacao']];
   registros.forEach(r => {
     const m = calcHoras(r);
-    linhas.push([r.funcionario_nome, r.funcionario_matricula || '', fmtDataBR(r.data), r.cidade || '',
+    const situ = r.tipo ? (ABONO_LABEL[r.tipo] || r.tipo) : 'Trabalho';
+    linhas.push([r.funcionario_nome, r.funcionario_matricula || '', fmtDataBR(r.data), situ, r.cidade || '',
       r.entrada || '', r.almoco_inicio || '', r.almoco_fim || '', r.saida || '',
       m !== null ? fmtMin(m) : '', (r.observacao || '').replace(/;/g, ',')]);
   });
