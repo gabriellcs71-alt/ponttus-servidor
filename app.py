@@ -328,6 +328,28 @@ def login():
     conn.close()
     return jsonify({"ok": False, "erro": "Usuário ou senha inválidos"}), 401
 
+# ── TROCAR SENHA (funcionário) ────────────────────────
+@app.route('/senha', methods=['POST'])
+@require_token
+def trocar_senha(auth_fid):
+    """O funcionário autenticado troca a própria senha (exige a senha atual)."""
+    data = request.get_json(silent=True) or {}
+    atual = str(data.get('senha_atual', '') or '')[:100]
+    nova  = str(data.get('nova_senha', '') or '')[:100]
+    if len(nova) < 6:
+        return jsonify({"ok": False, "erro": "A nova senha deve ter no mínimo 6 caracteres"}), 400
+
+    conn = get_db()
+    row = conn.execute("SELECT senha_hash FROM funcionarios WHERE id=?", (auth_fid,)).fetchone()
+    if not row or not verificar_senha(atual, row['senha_hash']):
+        conn.close()
+        return jsonify({"ok": False, "erro": "Senha atual incorreta"}), 401
+    conn.execute("UPDATE funcionarios SET senha_hash=? WHERE id=?",
+                 (_hash_pbkdf2_full(nova), auth_fid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
 # ── REGISTROS ─────────────────────────────────────────
 @app.route('/registros', methods=['POST'])
 @require_token
