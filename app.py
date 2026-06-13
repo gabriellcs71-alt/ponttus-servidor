@@ -151,6 +151,7 @@ def init_db():
     conn = get_db()
     for stmt in _schema_sql():
         conn.execute(stmt)
+    conn.commit()  # consolida o schema antes das migrações (evita rollback derrubar as tabelas no PG)
 
     # Migração (somente SQLite): converte datas antigas DD/MM/YYYY para ISO YYYY-MM-DD
     if not USE_PG:
