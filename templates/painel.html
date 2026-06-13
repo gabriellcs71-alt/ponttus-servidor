@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ponttus — Painel Administrativo</title>
+<style>
+  :root {
+    --vermelho: #B71C1C; --vermelho-m: #C62828; --vermelho-l: #FFEBEE;
+    --rosa: #FFCDD2; --cinza: #F5F5F5; --texto: #333;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
+  body { background: var(--cinza); color: var(--texto); }
+  header { background: var(--vermelho); color: #fff; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 20px; }
+  header small { opacity: .8; }
+  .tabs { display: flex; gap: 8px; padding: 12px 24px 0; }
+  .tab { padding: 10px 20px; border: none; border-radius: 8px 8px 0 0; background: var(--rosa); color: var(--vermelho); font-weight: bold; cursor: pointer; font-size: 14px; }
+  .tab.ativa { background: #fff; }
+  main { background: #fff; margin: 0 24px 24px; padding: 20px; border-radius: 0 8px 8px 8px; min-height: 60vh; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: var(--vermelho-l); color: var(--vermelho); text-align: left; padding: 8px; position: sticky; top: 0; }
+  td { padding: 8px; border-bottom: 1px solid #eee; }
+  tr:hover td { background: var(--vermelho-l); }
+  .btn { background: var(--vermelho); color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-weight: bold; font-size: 13px; }
+  .btn.sec { background: #fff; color: var(--vermelho); border: 1.5px solid var(--vermelho); }
+  .btn:hover { opacity: .9; }
+  .barra { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+  input, select { padding: 8px 10px; border: 1.5px solid var(--rosa); border-radius: 6px; font-size: 13px; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+  .badge.on  { background: #E8F5E9; color: #2E7D32; }
+  .badge.off { background: #FFEBEE; color: var(--vermelho); }
+  dialog { border: none; border-radius: 12px; padding: 24px; width: 380px; box-shadow: 0 8px 40px rgba(0,0,0,.3); }
+  dialog::backdrop { background: rgba(0,0,0,.5); }
+  dialog h2 { color: var(--vermelho); font-size: 16px; margin-bottom: 14px; }
+  dialog label { display: block; font-size: 12px; font-weight: bold; color: var(--vermelho); margin: 10px 0 4px; }
+  dialog input, dialog select { width: 100%; }
+  .dlg-acoes { display: flex; gap: 10px; margin-top: 18px; justify-content: flex-end; }
+  .resumo { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .card { background: var(--vermelho-l); border-radius: 8px; padding: 12px 20px; }
+  .card b { display: block; font-size: 22px; color: var(--vermelho); }
+  .card span { font-size: 11px; color: var(--vermelho-m); }
+  #msg { padding: 10px; border-radius: 6px; margin-bottom: 12px; display: none; font-size: 13px; }
+  #msg.ok  { background: #E8F5E9; color: #2E7D32; display: block; }
+  #msg.err { background: var(--vermelho-l); color: var(--vermelho); display: block; }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Ponttus</h1><small>Painel Administrativo — Controle de Ponto</small></div>
+  <button class="btn sec" style="background:transparent;color:#fff;border-color:#fff" onclick="trocarChave()">Chave Admin</button>
+</header>
+
+<div class="tabs">
+  <button class="tab ativa" id="tabFunc" onclick="mostrar('func')">Funcionários</button>
+  <button class="tab" id="tabReg" onclick="mostrar('reg')">Registros de Ponto</button>
+</div>
+
+<main>
+  <div id="msg"></div>
+
+  <section id="secFunc">
+    <div class="barra">
+      <button class="btn" onclick="abrirNovo()">+ Novo Funcionário</button>
+      <button class="btn sec" onclick="carregarFuncionarios()">Atualizar</button>
+    </div>
+    <table>
+      <thead><tr><th>Nome</th><th>Usuário</th><th>Matrícula</th><th>Cargo</th><th>Status</th><th></th></tr></thead>
+      <tbody id="tbFunc"></tbody>
+    </table>
+  </section>
+
+  <section id="secReg" style="display:none">
+    <div class="barra">
+      <label style="font-size:13px;font-weight:bold;color:var(--vermelho)">Mês:</label>
+      <input type="month" id="filtroMes">
+      <button class="btn" onclick="carregarRegistros()">Buscar</button>
+      <button class="btn sec" onclick="exportarCSV()">Exportar CSV</button>
+    </div>
+    <div class="resumo" id="resumoReg"></div>
+    <div style="max-height:60vh;overflow:auto">
+      <table>
+        <thead><tr><th>Funcionário</th><th>Data</th><th>Cidade</th><th>Entrada</th><th>Almoço</th><th>Saída</th><th>Horas</th><th>Obs.</th></tr></thead>
+        <tbody id="tbReg"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlgFunc">
+  <h2 id="dlgTitulo">Novo Funcionário</h2>
+  <form id="formFunc" onsubmit="salvarFuncionario(event)">
+    <input type="hidden" id="fId">
+    <label>Nome completo</label><input id="fNome" required maxlength="100">
+    <label>Usuário (login)</label><input id="fUsuario" required maxlength="50" pattern="[a-z0-9._-]{3,50}" title="3-50 caracteres minúsculos, números, . _ -">
+    <label>Matrícula</label><input id="fMatricula" maxlength="20">
+    <label>Cargo</label>
+    <select id="fCargo">
+      <option value="MOTORISTA">Motorista</option>
+      <option value="AJUDANTE">Ajudante</option>
+      <option value="">Outro</option>
+    </select>
+    <label>Senha <small id="senhaDica">(mín. 6 caracteres)</small></label>
+    <input id="fSenha" type="text" minlength="6" maxlength="100">
+    <label>Status</label>
+    <select id="fAtivo"><option value="1">Ativo</option><option value="0">Inativo</option></select>
+    <div class="dlg-acoes">
+      <button type="button" class="btn sec" onclick="dlgFunc.close()">Cancelar</button>
+      <button type="submit" class="btn">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const API = location.origin;
+let funcionarios = [], registros = [];
+
+function chave() { return localStorage.getItem('adminKey') || ''; }
+function trocarChave() {
+  const k = prompt('Chave admin (X-Admin-Key). Deixe vazio se o servidor não exige:', chave());
+  if (k !== null) { localStorage.setItem('adminKey', k); carregarFuncionarios(); }
+}
+function hdrs() { return { 'Content-Type': 'application/json', 'X-Admin-Key': chave() }; }
+function aviso(texto, ok) {
+  const el = document.getElementById('msg');
+  el.textContent = texto; el.className = ok ? 'ok' : 'err';
+  setTimeout(() => { el.className = ''; el.style.display = 'none'; }, 4000);
+}
+
+function mostrar(qual) {
+  document.getElementById('secFunc').style.display = qual === 'func' ? '' : 'none';
+  document.getElementById('secReg').style.display  = qual === 'reg'  ? '' : 'none';
+  document.getElementById('tabFunc').classList.toggle('ativa', qual === 'func');
+  document.getElementById('tabReg').classList.toggle('ativa', qual === 'reg');
+  if (qual === 'reg' && registros.length === 0) carregarRegistros();
+}
+
+async function carregarFuncionarios() {
+  try {
+    const r = await fetch(`${API}/admin/funcionarios`, { headers: hdrs() });
+    if (r.status === 401) { aviso('Chave admin inválida. Clique em "Chave Admin".'); return; }
+    funcionarios = await r.json();
+    document.getElementById('tbFunc').innerHTML = funcionarios.map(f => `
+      <tr>
+        <td>${f.nome}</td><td>${f.usuario}</td><td>${f.matricula || '—'}</td><td>${f.cargo || '—'}</td>
+        <td><span class="badge ${f.ativo ? 'on' : 'off'}">${f.ativo ? 'Ativo' : 'Inativo'}</span></td>
+        <td><button class="btn sec" onclick="abrirEditar(${f.id})">Editar</button></td>
+      </tr>`).join('');
+  } catch { aviso('Erro de conexão com o servidor.'); }
+}
+
+function abrirNovo() {
+  document.getElementById('formFunc').reset();
+  document.getElementById('fId').value = '';
+  document.getElementById('dlgTitulo').textContent = 'Novo Funcionário';
+  document.getElementById('fSenha').required = true;
+  document.getElementById('senhaDica').textContent = '(mín. 6 caracteres)';
+  dlgFunc.showModal();
+}
+function abrirEditar(id) {
+  const f = funcionarios.find(x => x.id === id);
+  if (!f) return;
+  document.getElementById('fId').value = f.id;
+  document.getElementById('fNome').value = f.nome;
+  document.getElementById('fUsuario').value = f.usuario;
+  document.getElementById('fMatricula').value = f.matricula || '';
+  document.getElementById('fCargo').value = ['MOTORISTA','AJUDANTE'].includes(f.cargo) ? f.cargo : '';
+  document.getElementById('fSenha').value = '';
+  document.getElementById('fSenha').required = false;
+  document.getElementById('senhaDica').textContent = '(deixe vazio para manter a atual)';
+  document.getElementById('fAtivo').value = f.ativo ? '1' : '0';
+  document.getElementById('dlgTitulo').textContent = 'Editar Funcionário';
+  dlgFunc.showModal();
+}
+
+async function salvarFuncionario(ev) {
+  ev.preventDefault();
+  const id = document.getElementById('fId').value;
+  const body = {
+    nome: document.getElementById('fNome').value.trim(),
+    usuario: document.getElementById('fUsuario').value.trim().toLowerCase(),
+    matricula: document.getElementById('fMatricula').value.trim(),
+    cargo: document.getElementById('fCargo').value,
+    ativo: document.getElementById('fAtivo').value === '1' ? 1 : 0,
+  };
+  const senha = document.getElementById('fSenha').value;
+  if (senha) body.senha = senha;
+  const url = id ? `${API}/admin/funcionarios/${id}` : `${API}/admin/funcionarios`;
+  const r = await fetch(url, { method: id ? 'PUT' : 'POST', headers: hdrs(), body: JSON.stringify(body) });
+  const d = await r.json();
+  if (d.ok) { dlgFunc.close(); aviso('Salvo com sucesso!', true); carregarFuncionarios(); }
+  else aviso(d.erro || 'Erro ao salvar.');
+}
+
+function calcHoras(r) {
+  const min = t => { const [h, m] = (t || '').split(':').map(Number); return isNaN(h) ? null : h * 60 + m; };
+  const e = min(r.entrada), s = min(r.saida);
+  if (e === null || s === null) return null;
+  let total = s - e; if (total < 0) total += 24 * 60;
+  const ai = min(r.almoco_inicio), af = min(r.almoco_fim);
+  if (ai !== null && af !== null && af > ai) total -= (af - ai);
+  return total;
+}
+function fmtMin(m) { return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`; }
+function fmtDataBR(iso) { const [a, m, d] = iso.split('-'); return `${d}/${m}/${a}`; }
+
+async function carregarRegistros() {
+  const mes = document.getElementById('filtroMes').value;
+  try {
+    const r = await fetch(`${API}/admin/registros${mes ? '?mes=' + mes : ''}`, { headers: hdrs() });
+    if (r.status === 401) { aviso('Chave admin inválida.'); return; }
+    registros = await r.json();
+    let totalMin = 0, comHoras = 0;
+    document.getElementById('tbReg').innerHTML = registros.map(reg => {
+      const m = calcHoras(reg);
+      if (m !== null) { totalMin += m; comHoras++; }
+      const almoco = (reg.almoco_inicio && reg.almoco_fim) ? `${reg.almoco_inicio}–${reg.almoco_fim}` : '—';
+      return `<tr>
+        <td>${reg.funcionario_nome}${reg.funcionario_matricula ? ' (' + reg.funcionario_matricula + ')' : ''}</td>
+        <td>${fmtDataBR(reg.data)}</td><td>${reg.cidade || '—'}</td>
+        <td>${reg.entrada || '—'}</td><td>${almoco}</td><td>${reg.saida || '—'}</td>
+        <td><b>${m !== null ? fmtMin(m) : '—'}</b></td><td>${reg.observacao || ''}</td>
+      </tr>`;
+    }).join('');
+    document.getElementById('resumoReg').innerHTML = `
+      <div class="card"><b>${registros.length}</b><span>registros</span></div>
+      <div class="card"><b>${new Set(registros.map(r => r.funcionario_id)).size}</b><span>funcionários</span></div>
+      <div class="card"><b>${fmtMin(totalMin)}</b><span>horas trabalhadas (${comHoras} dias completos)</span></div>`;
+  } catch { aviso('Erro de conexão com o servidor.'); }
+}
+
+function exportarCSV() {
+  if (!registros.length) { aviso('Nenhum registro para exportar.'); return; }
+  const linhas = [['Funcionario','Matricula','Data','Cidade','Entrada','Almoco Inicio','Almoco Fim','Saida','Horas','Observacao']];
+  registros.forEach(r => {
+    const m = calcHoras(r);
+    linhas.push([r.funcionario_nome, r.funcionario_matricula || '', fmtDataBR(r.data), r.cidade || '',
+      r.entrada || '', r.almoco_inicio || '', r.almoco_fim || '', r.saida || '',
+      m !== null ? fmtMin(m) : '', (r.observacao || '').replace(/;/g, ',')]);
+  });
+  const csv = '﻿' + linhas.map(l => l.join(';')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const mes = document.getElementById('filtroMes').value || 'todos';
+  a.download = `ponto_${mes}.csv`;
+  a.click();
+}
+
+// Mês atual como padrão
+document.getElementById('filtroMes').value = new Date().toISOString().slice(0, 7);
+carregarFuncionarios();
+</script>
+</body>
+</html>
