@@ -154,6 +154,7 @@
           <button class="btn" onclick="abrirAbono()">+ Lançar Abono</button>
           <button class="btn" onclick="exportarExcel()">Exportar Excel</button>
           <button class="btn sec" onclick="exportarCSV()">Exportar CSV</button>
+          <button class="btn sec" onclick="exportarBackupCompleto()" title="Baixa todos os funcionários e todos os registros (todos os meses)">Backup completo</button>
         </div>
         <div class="resumo" id="resumoReg"></div>
         <div class="tbl-wrap"><div class="tbl-scroll">
@@ -473,6 +474,38 @@ function exportarBancoExcel() {
   XLSX.utils.book_append_sheet(wb, ws, 'Banco de Horas');
   const mes = document.getElementById('bancoMes').value || 'acumulado';
   XLSX.writeFile(wb, `banco_horas_${mes}.xlsx`);
+}
+
+async function exportarBackupCompleto() {
+  try {
+    const [rf, rr] = await Promise.all([
+      fetch(`${API}/admin/funcionarios?limit=500`, { headers: hdrs() }),
+      fetch(`${API}/admin/registros`, { headers: hdrs() }),
+    ]);
+    if (rf.status === 401 || rr.status === 401) { aviso('Chave admin inválida.'); return; }
+    const funcs = await rf.json();
+    const regs = await rr.json();
+    const wsF = XLSX.utils.aoa_to_sheet([
+      ['ID', 'Nome', 'Usuário', 'Matrícula', 'Cargo', 'Status', 'Criado em'],
+      ...funcs.map(f => [f.id, f.nome, f.usuario, f.matricula || '', f.cargo || '', f.ativo ? 'Ativo' : 'Inativo', f.criado_em || '']),
+    ]);
+    const wsR = XLSX.utils.aoa_to_sheet([
+      ['Funcionário', 'Matrícula', 'Data', 'Situação', 'Cidade', 'Entrada', 'Almoço Início', 'Almoço Fim', 'Saída', 'Horas', 'Observação', 'Enviado em'],
+      ...regs.map(r => {
+        const m = calcHoras(r);
+        const situ = r.tipo ? (ABONO_LABEL[r.tipo] || r.tipo) : 'Trabalho';
+        return [r.funcionario_nome, r.funcionario_matricula || '', fmtDataBR(r.data), situ, r.cidade || '',
+          r.entrada || '', r.almoco_inicio || '', r.almoco_fim || '', r.saida || '',
+          m !== null ? fmtMin(m) : '', r.observacao || '', r.enviado_em || ''];
+      }),
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, wsF, 'Funcionários');
+    XLSX.utils.book_append_sheet(wb, wsR, 'Registros');
+    const hoje = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `ponttus_backup_${hoje}.xlsx`);
+    aviso('Backup completo gerado!', true);
+  } catch { aviso('Erro ao gerar o backup.'); }
 }
 
 function exportarCSV() {
