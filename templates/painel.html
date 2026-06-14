@@ -127,6 +127,7 @@
       <button class="tab ativa" id="tabFunc" onclick="mostrar('func')">Funcionários</button>
       <button class="tab" id="tabReg" onclick="mostrar('reg')">Registros de ponto</button>
       <button class="tab" id="tabBanco" onclick="mostrar('banco')">Banco de horas</button>
+      <button class="tab" id="tabChecklist" onclick="mostrar('checklist')">Checklists</button>
       <div class="side-foot">GestLog · uso interno</div>
     </aside>
 
@@ -179,6 +180,22 @@
           <table>
             <thead><tr><th>Funcionário</th><th>Dias trabalhados</th><th>Horas trabalhadas</th><th>Faltas</th><th>Saldo do banco</th></tr></thead>
             <tbody id="tbBanco"></tbody>
+          </table>
+        </div></div>
+      </section>
+
+      <section id="secChecklist" style="display:none">
+        <div class="barra">
+          <label>Mês:</label>
+          <input type="month" id="checklistMes">
+          <button class="btn" onclick="carregarChecklists()">Buscar</button>
+          <span style="font-size:12px;color:var(--txt3);margin-left:auto">Inspeção diária dos veículos (motoristas)</span>
+        </div>
+        <div class="resumo" id="resumoChecklist"></div>
+        <div class="tbl-wrap"><div class="tbl-scroll">
+          <table>
+            <thead><tr><th>Motorista</th><th>Data</th><th>Veículo</th><th>KM</th><th>Próx. óleo</th><th>Problemas</th></tr></thead>
+            <tbody id="tbChecklist"></tbody>
           </table>
         </div></div>
       </section>
@@ -252,12 +269,38 @@ function aviso(texto, ok) {
 }
 
 function mostrar(qual) {
-  ['func', 'reg', 'banco'].forEach(q => {
+  ['func', 'reg', 'banco', 'checklist'].forEach(q => {
     document.getElementById('sec' + q[0].toUpperCase() + q.slice(1)).style.display = qual === q ? '' : 'none';
     document.getElementById('tab' + q[0].toUpperCase() + q.slice(1)).classList.toggle('ativa', qual === q);
   });
   if (qual === 'reg' && registros.length === 0) carregarRegistros();
   if (qual === 'banco') carregarBanco();
+  if (qual === 'checklist') carregarChecklists();
+}
+
+async function carregarChecklists() {
+  const mes = document.getElementById('checklistMes').value;
+  try {
+    const r = await fetch(`${API}/admin/checklists${mes ? '?mes=' + mes : ''}`, { headers: hdrs() });
+    if (r.status === 401) { aviso('Chave admin inválida.'); return; }
+    const lista = await r.json();
+    let totalProblemas = 0;
+    document.getElementById('tbChecklist').innerHTML = lista.map(c => {
+      const probs = (c.itens || []).filter(i => i.status === 'problema');
+      totalProblemas += probs.length;
+      const probTxt = probs.length
+        ? `<span class="badge off">${probs.length}</span> ` + probs.map(p => `${p.item}${p.obs ? ' (' + p.obs + ')' : ''}`).join('; ')
+        : `<span class="badge on">Tudo OK</span>`;
+      return `<tr>
+        <td>${c.funcionario_nome}${c.funcionario_matricula ? ' (' + c.funcionario_matricula + ')' : ''}</td>
+        <td>${fmtDataBR(c.data)}</td><td>${c.veiculo || '—'}</td><td>${c.km || '—'}</td><td>${c.prox_troca_oleo || '—'}</td>
+        <td>${probTxt}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--txt3);padding:20px">Nenhum checklist no período.</td></tr>';
+    document.getElementById('resumoChecklist').innerHTML = `
+      <div class="card"><b>${lista.length}</b><span>checklists</span></div>
+      <div class="card"><b>${totalProblemas}</b><span>problemas reportados</span></div>`;
+  } catch { aviso('Erro de conexão com o servidor.'); }
 }
 
 async function carregarFuncionarios() {
@@ -529,6 +572,7 @@ function exportarCSV() {
 // Mês atual como padrão
 document.getElementById('filtroMes').value = new Date().toISOString().slice(0, 7);
 document.getElementById('bancoMes').value = new Date().toISOString().slice(0, 7);
+document.getElementById('checklistMes').value = new Date().toISOString().slice(0, 7);
 carregarFuncionarios();
 </script>
 </body>

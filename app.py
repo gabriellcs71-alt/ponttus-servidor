@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import time
+import json
 from functools import wraps
 
 app = Flask(__name__)
@@ -108,6 +109,18 @@ def _schema_sql():
                 criado_em TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS')),
                 ultimo_uso TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
             )""",
+            """CREATE TABLE IF NOT EXISTS checklists (
+                id SERIAL PRIMARY KEY,
+                funcionario_id INTEGER NOT NULL REFERENCES funcionarios(id),
+                data TEXT NOT NULL,
+                veiculo TEXT DEFAULT '',
+                km TEXT DEFAULT '',
+                prox_troca_oleo TEXT DEFAULT '',
+                itens TEXT DEFAULT '',
+                criado_em TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
+            )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_check_func_data
+                ON checklists(funcionario_id, data)""",
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_func_data
                 ON registros(funcionario_id, data)""",
         ]
@@ -143,6 +156,19 @@ def _schema_sql():
             ultimo_uso TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
         )""",
+        """CREATE TABLE IF NOT EXISTS checklists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            funcionario_id INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            veiculo TEXT DEFAULT '',
+            km TEXT DEFAULT '',
+            prox_troca_oleo TEXT DEFAULT '',
+            itens TEXT DEFAULT '',
+            criado_em TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
+        )""",
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_check_func_data
+            ON checklists(funcionario_id, data)""",
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_func_data
             ON registros(funcionario_id, data)""",
     ]
@@ -418,6 +444,101 @@ def get_registros(auth_fid):
     conn.close()
     return jsonify([dict(r) for r in rows])
 
+# ── CHECKLIST DO VEÍCULO (somente motoristas) ─────────
+def _eh_motorista(fid, conn):
+    row = conn.execute("SELECT cargo FROM funcionarios WHERE id=?", (fid,)).fetchone()
+    return bool(row) and (row['cargo'] or '').strip().upper() == 'MOTORISTA'
+
+@app.route('/checklist', methods=['POST'])
+@require_token
+def salvar_checklist(auth_fid):
+    data = request.get_json(silent=True) or {}
+    data_iso = normalizar_data(data.get('data', ''))
+    if not data_iso:
+        return jsonify({"ok": False, "erro": "Data inválida"}), 400
+    conn = get_db()
+    if not _eh_motorista(auth_fid, conn):
+        conn.close()
+        return jsonify({"ok": False, "erro": "Apenas motoristas podem enviar o checklist."}), 403
+    veiculo = str(data.get('veiculo', '') or '')[:60]
+    km      = str(data.get('km', '') or '')[:20]
+    prox    = str(data.get('prox_troca_oleo', '') or '')[:20]
+    itens   = data.get('itens', [])
+    if not isinstance(itens, list) or len(itens) > 60:
+        conn.close()
+        return jsonify({"ok": False, "erro": "Itens inválidos"}), 400
+    limpos = []
+    for it in itens:
+        if not isinstance(it, dict):
+            continue
+        limpos.append({
+            'item': str(it.get('item', ''))[:80],
+            'status': 'problema' if str(it.get('status', '')) == 'problema' else 'ok',
+            'obs': str(it.get('obs', '') or '')[:300],
+        })
+    itens_json = json.dumps(limpos, ensure_ascii=False)
+    conn.execute(f"""
+        INSERT INTO checklists (funcionario_id, data, veiculo, km, prox_troca_oleo, itens)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(funcionario_id, data) DO UPDATE SET
+            veiculo=excluded.veiculo, km=excluded.km, prox_troca_oleo=excluded.prox_troca_oleo,
+            itens=excluded.itens, criado_em={NOW_SQL}
+    """, (auth_fid, data_iso, veiculo, km, prox, itens_json))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.route('/checklist', methods=['GET'])
+@require_token
+def get_checklist(auth_fid):
+    data_iso = normalizar_data(request.args.get('data', ''))
+    conn = get_db()
+    if not _eh_motorista(auth_fid, conn):
+        conn.close()
+        return jsonify({"ok": False, "erro": "Apenas motoristas"}), 403
+    row = None
+    if data_iso:
+        row = conn.execute("SELECT * FROM checklists WHERE funcionario_id=? AND data=?",
+                           (auth_fid, data_iso)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": True, "checklist": None})
+    d = dict(row)
+    try:
+        d['itens'] = json.loads(d.get('itens') or '[]')
+    except Exception:
+        d['itens'] = []
+    return jsonify({"ok": True, "checklist": d})
+
+@app.route('/admin/checklists', methods=['GET'])
+@require_admin_key
+def admin_checklists():
+    mes = request.args.get('mes', '')
+    conn = get_db()
+    query = """
+        SELECT c.*, f.nome as funcionario_nome, f.matricula as funcionario_matricula
+        FROM checklists c JOIN funcionarios f ON f.id = c.funcionario_id
+    """
+    params = []
+    if mes:
+        if not _validar_mes(mes):
+            conn.close()
+            return jsonify({"ok": False, "erro": "Formato de mês inválido (use YYYY-MM)"}), 400
+        query += " WHERE c.data LIKE ?"
+        params.append(f"{mes}%")
+    query += " ORDER BY c.data DESC, f.nome"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d['itens'] = json.loads(d.get('itens') or '[]')
+        except Exception:
+            d['itens'] = []
+        out.append(d)
+    return jsonify(out)
+
 # ── ADMIN: FUNCIONÁRIOS ───────────────────────────────
 @app.route('/admin/funcionarios', methods=['GET'])
 @require_admin_key
@@ -589,5 +710,3 @@ if __name__ == '__main__':
     host  = os.environ.get('HOST', '0.0.0.0')
     debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host=host, port=port, debug=debug)
-
-# teste auto-deploy 1781400366
