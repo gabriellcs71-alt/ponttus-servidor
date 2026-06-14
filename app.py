@@ -121,6 +121,19 @@ def _schema_sql():
             )""",
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_check_func_data
                 ON checklists(funcionario_id, data)""",
+            """CREATE TABLE IF NOT EXISTS manutencoes (
+                id SERIAL PRIMARY KEY,
+                funcionario_id INTEGER NOT NULL REFERENCES funcionarios(id),
+                data TEXT NOT NULL,
+                veiculo TEXT DEFAULT '',
+                item TEXT NOT NULL,
+                obs TEXT DEFAULT '',
+                status TEXT DEFAULT 'pendente',
+                criado_em TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS')),
+                resolvido_em TEXT DEFAULT ''
+            )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_manut_func_data_item
+                ON manutencoes(funcionario_id, data, item)""",
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_func_data
                 ON registros(funcionario_id, data)""",
         ]
@@ -169,6 +182,20 @@ def _schema_sql():
         )""",
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_check_func_data
             ON checklists(funcionario_id, data)""",
+        """CREATE TABLE IF NOT EXISTS manutencoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            funcionario_id INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            veiculo TEXT DEFAULT '',
+            item TEXT NOT NULL,
+            obs TEXT DEFAULT '',
+            status TEXT DEFAULT 'pendente',
+            criado_em TEXT DEFAULT (datetime('now')),
+            resolvido_em TEXT DEFAULT '',
+            FOREIGN KEY (funcionario_id) REFERENCES funcionarios(id)
+        )""",
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_manut_func_data_item
+            ON manutencoes(funcionario_id, data, item)""",
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_reg_func_data
             ON registros(funcionario_id, data)""",
     ]
@@ -484,6 +511,26 @@ def salvar_checklist(auth_fid):
             veiculo=excluded.veiculo, km=excluded.km, prox_troca_oleo=excluded.prox_troca_oleo,
             itens=excluded.itens, criado_em={NOW_SQL}
     """, (auth_fid, data_iso, veiculo, km, prox, itens_json))
+
+    # Gera as manutenções a partir dos itens marcados como "problema".
+    # Preserva o status de pendências já resolvidas; remove as que não são mais problema.
+    problemas = [it for it in limpos if it['status'] == 'problema']
+    nomes_prob = set(p['item'] for p in problemas)
+    pend = conn.execute(
+        "SELECT id, item FROM manutencoes WHERE funcionario_id=? AND data=? AND status='pendente'",
+        (auth_fid, data_iso)
+    ).fetchall()
+    for row in pend:
+        if row['item'] not in nomes_prob:
+            conn.execute("DELETE FROM manutencoes WHERE id=?", (row['id'],))
+    for p in problemas:
+        conn.execute("""
+            INSERT INTO manutencoes (funcionario_id, data, veiculo, item, obs)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(funcionario_id, data, item) DO UPDATE SET
+                veiculo=excluded.veiculo, obs=excluded.obs
+        """, (auth_fid, data_iso, veiculo, p['item'], p['obs']))
+
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -538,6 +585,42 @@ def admin_checklists():
             d['itens'] = []
         out.append(d)
     return jsonify(out)
+
+@app.route('/admin/manutencoes', methods=['GET'])
+@require_admin_key
+def admin_manutencoes():
+    """Lista as manutenções (problemas reportados). status=pendente|resolvido|todos.
+    Ordenadas por horário do reporte (mais antigas primeiro)."""
+    status = request.args.get('status', 'pendente')
+    conn = get_db()
+    query = """
+        SELECT m.*, f.nome as funcionario_nome, f.matricula as funcionario_matricula
+        FROM manutencoes m JOIN funcionarios f ON f.id = m.funcionario_id
+    """
+    params = []
+    if status in ('pendente', 'resolvido'):
+        query += " WHERE m.status=?"
+        params.append(status)
+    query += " ORDER BY m.criado_em ASC, m.data ASC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/admin/manutencoes/resolver', methods=['POST'])
+@require_admin_key
+def admin_manutencao_resolver():
+    data = request.get_json(silent=True) or {}
+    try:
+        mid = int(data.get('id'))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "erro": "id inválido"}), 400
+    novo = 'pendente' if str(data.get('acao', '')) == 'reabrir' else 'resolvido'
+    conn = get_db()
+    quando = NOW_SQL if novo == 'resolvido' else "''"
+    conn.execute(f"UPDATE manutencoes SET status=?, resolvido_em={quando} WHERE id=?", (novo, mid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "status": novo})
 
 # ── ADMIN: FUNCIONÁRIOS ───────────────────────────────
 @app.route('/admin/funcionarios', methods=['GET'])

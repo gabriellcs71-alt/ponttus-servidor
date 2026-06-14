@@ -133,6 +133,7 @@
 
     <main>
       <div id="msg"></div>
+      <div id="avisoManut" onclick="mostrar('checklist')" style="display:none;cursor:pointer;background:var(--red-soft);border:1px solid var(--red-bd);color:#f0a39f;padding:12px 16px;border-radius:10px;margin-bottom:14px;font-weight:600;"></div>
 
       <section id="secFunc">
         <div class="barra">
@@ -185,6 +186,19 @@
       </section>
 
       <section id="secChecklist" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <span style="font-size:15px;font-weight:600;color:#f0a39f;">🔧 Manutenções pendentes</span>
+          <span style="font-size:12px;color:var(--txt3);">(em ordem de chegada — atenda de cima pra baixo)</span>
+          <button class="btn sec" style="margin-left:auto" onclick="carregarManutencoes()">Atualizar</button>
+        </div>
+        <div class="tbl-wrap" style="margin-bottom:26px;"><div class="tbl-scroll">
+          <table>
+            <thead><tr><th>Reportado</th><th>Motorista</th><th>Veículo</th><th>Item</th><th>Observação</th><th></th></tr></thead>
+            <tbody id="tbManutPend"></tbody>
+          </table>
+        </div></div>
+
+        <div style="font-size:15px;font-weight:600;color:#d0d8ef;margin-bottom:10px;">Checklists enviados</div>
         <div class="barra">
           <label>Mês:</label>
           <input type="month" id="checklistMes">
@@ -275,7 +289,60 @@ function mostrar(qual) {
   });
   if (qual === 'reg' && registros.length === 0) carregarRegistros();
   if (qual === 'banco') carregarBanco();
-  if (qual === 'checklist') carregarChecklists();
+  if (qual === 'checklist') { carregarManutencoes(); carregarChecklists(); }
+}
+
+function fmtDataHora(s) {
+  if (!s) return '—';
+  const [d, t] = String(s).split(' ');
+  const dd = d ? d.split('-').reverse().slice(0, 2).join('/') : '';
+  return `${dd} ${t ? t.slice(0, 5) : ''}`.trim();
+}
+
+let manutPendentes = 0;
+function atualizarAvisoManut() {
+  const el = document.getElementById('avisoManut');
+  const tab = document.getElementById('tabChecklist');
+  if (manutPendentes > 0) {
+    el.textContent = `⚠ ${manutPendentes} manutenção(ões) pendente(s) — clique para ver`;
+    el.style.display = 'block';
+    tab.textContent = `Checklists (${manutPendentes})`;
+  } else {
+    el.style.display = 'none';
+    tab.textContent = 'Checklists';
+  }
+}
+
+async function carregarManutencoes() {
+  try {
+    const r = await fetch(`${API}/admin/manutencoes?status=pendente`, { headers: hdrs() });
+    if (r.status === 401) { aviso('Chave admin inválida.'); return; }
+    const lista = await r.json();
+    manutPendentes = lista.length;
+    atualizarAvisoManut();
+    const tb = document.getElementById('tbManutPend');
+    if (tb) {
+      tb.innerHTML = lista.map(m => `
+        <tr>
+          <td>${fmtDataHora(m.criado_em)}</td>
+          <td>${m.funcionario_nome}${m.funcionario_matricula ? ' (' + m.funcionario_matricula + ')' : ''}</td>
+          <td>${m.veiculo || '—'}</td>
+          <td><b>${m.item}</b></td>
+          <td>${m.obs || '—'}</td>
+          <td><button class="btn" onclick="resolverManut(${m.id})">Resolver</button></td>
+        </tr>`).join('') ||
+        '<tr><td colspan="6" style="text-align:center;color:var(--green);padding:20px">✓ Nenhuma manutenção pendente.</td></tr>';
+    }
+  } catch { /* silencioso */ }
+}
+
+async function resolverManut(id) {
+  const r = await fetch(`${API}/admin/manutencoes/resolver`, {
+    method: 'POST', headers: hdrs(), body: JSON.stringify({ id }),
+  });
+  const d = await r.json();
+  if (d.ok) { aviso('Manutenção resolvida!', true); carregarManutencoes(); }
+  else aviso(d.erro || 'Erro ao resolver.');
 }
 
 async function carregarChecklists() {
@@ -574,6 +641,7 @@ document.getElementById('filtroMes').value = new Date().toISOString().slice(0, 7
 document.getElementById('bancoMes').value = new Date().toISOString().slice(0, 7);
 document.getElementById('checklistMes').value = new Date().toISOString().slice(0, 7);
 carregarFuncionarios();
+carregarManutencoes();
 </script>
 </body>
 </html>
