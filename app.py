@@ -381,6 +381,21 @@ def login():
     conn.close()
     return jsonify({"ok": False, "erro": "Usuário ou senha inválidos"}), 401
 
+# ── DADOS ATUAIS DO FUNCIONÁRIO ───────────────────────
+@app.route('/me', methods=['GET'])
+@require_token
+def me(auth_fid):
+    """Retorna os dados atuais do funcionário autenticado (ex.: cargo atualizado)."""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT id, nome, usuario, matricula, cargo FROM funcionarios WHERE id=? AND ativo=1",
+        (auth_fid,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "erro": "Funcionário não encontrado"}), 404
+    return jsonify({"ok": True, "funcionario": dict(row)})
+
 # ── TROCAR SENHA (funcionário) ────────────────────────
 @app.route('/senha', methods=['POST'])
 @require_token
