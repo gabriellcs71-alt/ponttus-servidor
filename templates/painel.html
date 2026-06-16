@@ -154,7 +154,8 @@
           <input type="month" id="filtroMes">
           <button class="btn" onclick="carregarRegistros()">Buscar</button>
           <button class="btn" onclick="abrirAbono()">+ Lançar Abono</button>
-          <button class="btn" onclick="exportarExcel()">Exportar Excel</button>
+          <button class="btn" onclick="baixarPlanilhaModelo()" title="Gera o Excel no modelo oficial da empresa, um bloco por funcionário, com os dias do mês preenchidos">📄 Planilha (modelo oficial)</button>
+          <button class="btn sec" onclick="exportarExcel()">Exportar Excel</button>
           <button class="btn sec" onclick="exportarCSV()">Exportar CSV</button>
           <button class="btn sec" onclick="exportarBackupCompleto()" title="Baixa todos os funcionários e todos os registros (todos os meses)">Backup completo</button>
         </div>
@@ -257,6 +258,8 @@
     <input id="fSenha" type="text" minlength="6" maxlength="100">
     <label>Status</label>
     <select id="fAtivo"><option value="1">Ativo</option><option value="0">Inativo</option></select>
+    <label>Roteirização (mapa de clientes)</label>
+    <select id="fRoteirizacao"><option value="0">Sem acesso</option><option value="1">Liberada</option></select>
     <div class="dlg-acoes">
       <button type="button" class="btn sec" onclick="dlgFunc.close()">Cancelar</button>
       <button type="submit" class="btn">Salvar</button>
@@ -377,7 +380,7 @@ async function carregarFuncionarios() {
     funcionarios = await r.json();
     document.getElementById('tbFunc').innerHTML = funcionarios.map(f => `
       <tr>
-        <td>${f.nome}</td><td>${f.usuario}</td><td>${f.matricula || '—'}</td><td>${f.cargo || '—'}</td>
+        <td>${f.nome}</td><td>${f.usuario}</td><td>${f.matricula || '—'}</td><td>${f.cargo || '—'}${f.roteirizacao ? ' 🗺️' : ''}</td>
         <td><span class="badge ${f.ativo ? 'on' : 'off'}">${f.ativo ? 'Ativo' : 'Inativo'}</span></td>
         <td><button class="btn sec" onclick="abrirEditar(${f.id})">Editar</button></td>
       </tr>`).join('');
@@ -404,6 +407,7 @@ function abrirEditar(id) {
   document.getElementById('fSenha').required = false;
   document.getElementById('senhaDica').textContent = '(deixe vazio para manter a atual)';
   document.getElementById('fAtivo').value = f.ativo ? '1' : '0';
+  document.getElementById('fRoteirizacao').value = f.roteirizacao ? '1' : '0';
   document.getElementById('dlgTitulo').textContent = 'Editar Funcionário';
   dlgFunc.showModal();
 }
@@ -417,6 +421,7 @@ async function salvarFuncionario(ev) {
     matricula: document.getElementById('fMatricula').value.trim(),
     cargo: document.getElementById('fCargo').value,
     ativo: document.getElementById('fAtivo').value === '1' ? 1 : 0,
+    roteirizacao: document.getElementById('fRoteirizacao').value === '1' ? 1 : 0,
   };
   const senha = document.getElementById('fSenha').value;
   if (senha) body.senha = senha;
@@ -552,6 +557,21 @@ async function removerAbono(fid, data) {
   const d = await r.json();
   if (d.ok) { aviso('Abono removido.', true); carregarRegistros(); }
   else aviso(d.erro || 'Erro ao remover.');
+}
+
+async function baixarPlanilhaModelo() {
+  const mes = document.getElementById('filtroMes').value;
+  if (!mes) { aviso('Selecione o mês primeiro.'); return; }
+  try {
+    const r = await fetch(`${API}/admin/exportar?mes=${mes}`, { headers: { 'X-Admin-Key': chave() } });
+    if (!r.ok) { aviso('Falha ao gerar (verifique a Chave Admin). HTTP ' + r.status); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `CONTROLE_PONTO_${mes}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { aviso('Erro ao baixar a planilha: ' + e.message); }
 }
 
 function exportarExcel() {

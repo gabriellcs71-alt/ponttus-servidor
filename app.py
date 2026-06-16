@@ -1,6 +1,9 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 import sqlite3
+import io
+import calendar
+import datetime as _dt
 import hashlib
 import os
 import re
@@ -87,8 +90,16 @@ def _schema_sql():
                 senha_hash TEXT NOT NULL,
                 matricula TEXT DEFAULT '',
                 cargo TEXT DEFAULT '',
+                roteirizacao INTEGER DEFAULT 0,
                 ativo INTEGER DEFAULT 1,
                 criado_em TEXT DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
+            )""",
+            """CREATE TABLE IF NOT EXISTS clientes_geo (
+                cod TEXT PRIMARY KEY,
+                lat REAL,
+                lng REAL,
+                precisao TEXT DEFAULT '',
+                atualizado_em TEXT DEFAULT ''
             )""",
             """CREATE TABLE IF NOT EXISTS registros (
                 id SERIAL PRIMARY KEY,
@@ -96,8 +107,14 @@ def _schema_sql():
                 data TEXT NOT NULL,
                 cidade TEXT,
                 entrada TEXT,
+                cafe_manha_inicio TEXT,
+                cafe_manha_fim TEXT,
                 almoco_inicio TEXT,
                 almoco_fim TEXT,
+                cafe_tarde_inicio TEXT,
+                cafe_tarde_fim TEXT,
+                jantar_inicio TEXT,
+                jantar_fim TEXT,
                 saida TEXT,
                 observacao TEXT,
                 tipo TEXT DEFAULT '',
@@ -145,8 +162,16 @@ def _schema_sql():
             senha_hash TEXT NOT NULL,
             matricula TEXT DEFAULT '',
             cargo TEXT DEFAULT '',
+            roteirizacao INTEGER DEFAULT 0,
             ativo INTEGER DEFAULT 1,
             criado_em TEXT DEFAULT (datetime('now'))
+        )""",
+        """CREATE TABLE IF NOT EXISTS clientes_geo (
+            cod TEXT PRIMARY KEY,
+            lat REAL,
+            lng REAL,
+            precisao TEXT DEFAULT '',
+            atualizado_em TEXT DEFAULT ''
         )""",
         """CREATE TABLE IF NOT EXISTS registros (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,8 +179,14 @@ def _schema_sql():
             data TEXT NOT NULL,
             cidade TEXT,
             entrada TEXT,
+            cafe_manha_inicio TEXT,
+            cafe_manha_fim TEXT,
             almoco_inicio TEXT,
             almoco_fim TEXT,
+            cafe_tarde_inicio TEXT,
+            cafe_tarde_fim TEXT,
+            jantar_inicio TEXT,
+            jantar_fim TEXT,
             saida TEXT,
             observacao TEXT,
             tipo TEXT DEFAULT '',
@@ -220,6 +251,40 @@ def init_db():
         conn.commit()
     except Exception:
         conn.rollback()  # coluna já existe
+
+    # Migração: permissão de roteirização por funcionário (admin libera p/ quem quiser).
+    try:
+        conn.execute("ALTER TABLE funcionarios ADD COLUMN roteirizacao INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        conn.rollback()  # coluna já existe
+
+    # Migração: intervalos extras (café manhã/tarde e jantar) p/ conformidade com a planilha.
+    for _col in ('cafe_manha_inicio', 'cafe_manha_fim', 'cafe_tarde_inicio',
+                 'cafe_tarde_fim', 'jantar_inicio', 'jantar_fim'):
+        try:
+            conn.execute(f"ALTER TABLE registros ADD COLUMN {_col} TEXT DEFAULT ''")
+            conn.commit()
+        except Exception:
+            conn.rollback()  # coluna já existe
+
+    # Seed do cache de geocodificação (uma vez, só se a tabela estiver vazia).
+    try:
+        if not conn.execute("SELECT 1 FROM clientes_geo LIMIT 1").fetchone():
+            import csv as _csv
+            seed = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clientes_geo_seed.csv')
+            if os.path.exists(seed):
+                with open(seed, encoding='utf-8-sig') as f:
+                    for r in _csv.DictReader(f):
+                        if not r.get('lat'):
+                            continue
+                        conn.execute(
+                            "INSERT INTO clientes_geo (cod, lat, lng, precisao, atualizado_em) VALUES (?,?,?,?,?)",
+                            (str(r['cod']), float(r['lat']), float(r['lng']), r.get('precisao', ''), '')
+                        )
+                conn.commit()
+    except Exception:
+        conn.rollback()
 
     # Migração: feriado deixou de ser marcado pelo funcionário (observacao='FERIADO')
     # e passou a ser um abono administrativo (tipo='feriado').
@@ -376,7 +441,8 @@ def login():
         return jsonify({
             "ok": True, "id": row["id"], "nome": row["nome"],
             "usuario": row["usuario"], "matricula": row["matricula"],
-            "cargo": row["cargo"], "token": token
+            "cargo": row["cargo"], "roteirizacao": int(row["roteirizacao"] or 0),
+            "token": token
         })
     conn.close()
     return jsonify({"ok": False, "erro": "Usuário ou senha inválidos"}), 401
@@ -388,13 +454,168 @@ def me(auth_fid):
     """Retorna os dados atuais do funcionário autenticado (ex.: cargo atualizado)."""
     conn = get_db()
     row = conn.execute(
-        "SELECT id, nome, usuario, matricula, cargo FROM funcionarios WHERE id=? AND ativo=1",
+        "SELECT id, nome, usuario, matricula, cargo, roteirizacao FROM funcionarios WHERE id=? AND ativo=1",
         (auth_fid,)
     ).fetchone()
     conn.close()
     if not row:
         return jsonify({"ok": False, "erro": "Funcionário não encontrado"}), 404
-    return jsonify({"ok": True, "funcionario": dict(row)})
+    f = dict(row)
+    f["roteirizacao"] = int(f.get("roteirizacao") or 0)
+    return jsonify({"ok": True, "funcionario": f})
+
+# ── CLIENTES PARA O MAPA (roteirização) ───────────────
+# Diretório (cod, endereço, rota) vem de clientes_enderecos.csv, carregado 1x em
+# memória. As coordenadas são geocodificadas SOB DEMANDA (só as rotas usadas) e
+# cacheadas na tabela clientes_geo. Cada requisição geocodifica um lote pequeno
+# para caber no timeout; o app reabre/atualiza até a rota ficar 100% pronta.
+import urllib.request as _urlreq, urllib.parse as _urlparse
+
+_GEO_UA   = "PonttusRoteirizacao/1.0 (gabriellcs71@gmail.com)"
+_GEO_MAX  = 6          # geocodificações por requisição (≈ lote dentro do timeout)
+_GEO_DELAY = 1.1       # respeita o uso justo do Nominatim (≤ 1 req/s)
+_geo_last = [0.0]
+_diretorio = {"rows": None}
+_ABREV = {"R.": "RUA ", "AV.": "AVENIDA ", "PC.": "PRACA ", "PCA.": "PRACA ",
+          "TRV": "TRAVESSA ", "ROD.": "RODOVIA ", "AL.": "ALAMEDA ", "EST.": "ESTRADA "}
+
+def _carregar_diretorio():
+    """Lê clientes_enderecos.csv (cod -> dados do cliente) uma vez."""
+    if _diretorio["rows"] is not None:
+        return _diretorio["rows"]
+    import csv as _csv
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, 'clientes_enderecos.csv')
+    rows = {}
+    if os.path.exists(path):
+        with open(path, encoding='utf-8-sig') as f:
+            for r in _csv.DictReader(f):
+                cod = str(r.get('cod', '')).strip()
+                if not cod:
+                    continue
+                rows[cod] = {
+                    'cod': cod,
+                    'nome': r.get('fantasia') or r.get('razao') or '',
+                    'endereco': r.get('endereco', ''),
+                    'numero': r.get('numero', ''),
+                    'bairro': r.get('bairro', ''),
+                    'cidade': r.get('cidade', ''),
+                    'uf': r.get('uf', '') or 'MG',
+                    'vendedores': [v for v in (r.get('vendedores', '') or '').split(';') if v],
+                }
+    _diretorio["rows"] = rows
+    return rows
+
+def _nominatim(params):
+    dt = time.time() - _geo_last[0]
+    if dt < _GEO_DELAY:
+        time.sleep(_GEO_DELAY - dt)
+    url = "https://nominatim.openstreetmap.org/search?" + _urlparse.urlencode(params)
+    req = _urlreq.Request(url, headers={"User-Agent": _GEO_UA})
+    _geo_last[0] = time.time()
+    try:
+        d = json.load(_urlreq.urlopen(req, timeout=10))
+        return (float(d[0]["lat"]), float(d[0]["lon"])) if d else None
+    except Exception:
+        return None
+
+def _geocodificar(rec):
+    """Retorna (lat, lng, precisao). Tenta rua+nº, depois rua, depois centro da cidade."""
+    rua = rec['endereco'].upper()
+    for k, v in _ABREV.items():
+        if rua.startswith(k):
+            rua = v + rua[len(k):]
+    rua = re.sub(r"\s+", " ", rua).strip()
+    cidade, uf, num = rec['cidade'], rec['uf'], rec['numero']
+    r = _nominatim({"street": (num + " " + rua).strip(), "city": cidade, "state": uf,
+                    "country": "Brasil", "format": "json", "limit": 1, "countrycodes": "br"})
+    if r:
+        return r[0], r[1], "rua"
+    r = _nominatim({"street": rua, "city": cidade, "state": uf, "country": "Brasil",
+                    "format": "json", "limit": 1, "countrycodes": "br"})
+    if r:
+        return r[0], r[1], "rua"
+    r = _nominatim({"city": cidade, "state": uf, "country": "Brasil",
+                    "format": "json", "limit": 1, "countrycodes": "br"})
+    if r:
+        return r[0], r[1], "cidade"
+    return None, None, "nenhuma"
+
+@app.route('/clientes_mapa', methods=['GET'])
+@require_token
+def clientes_mapa(auth_fid):
+    """Pontos da rota para o mapa. Geocodifica sob demanda e cacheia.
+    ?vend=<codigo> (default: matrícula do logado) · ?cidade=<nome> filtro opcional.
+    Resposta inclui 'preparando' (bool) e 'prontos'/'total' p/ o app atualizar até concluir."""
+    conn = get_db()
+    me = conn.execute(
+        "SELECT usuario, matricula, roteirizacao FROM funcionarios WHERE id=?", (auth_fid,)
+    ).fetchone()
+    autorizado = me and ((me['usuario'] or '').strip().lower() == 'admin'
+                         or int(me['roteirizacao'] or 0) == 1)
+    if not autorizado:
+        conn.close()
+        return jsonify({"ok": False, "erro": "Acesso restrito."}), 403
+
+    vend = (request.args.get('vend') or '').strip()
+    cidade = (request.args.get('cidade') or '').strip().upper()
+    if not vend:
+        vend = str(me['matricula']).strip() if me['matricula'] else ''
+
+    diret = _carregar_diretorio()
+    todos = vend.lower() == 'todos'
+    rota = [rec for rec in diret.values()
+            if (todos or (vend and vend in rec['vendedores']))
+            and (not cidade or rec['cidade'].upper() == cidade)]
+
+    if not rota:
+        conn.close()
+        return jsonify({"ok": True, "vend": vend, "total": 0, "prontos": 0,
+                        "preparando": False, "clientes": []})
+
+    # Coordenadas já em cache para os clientes desta rota.
+    cods = [r['cod'] for r in rota]
+    cache = {}
+    CHUNK = 400
+    for i in range(0, len(cods), CHUNK):
+        parte = cods[i:i + CHUNK]
+        ph = ",".join("?" * len(parte))
+        for row in conn.execute(
+            f"SELECT cod, lat, lng, precisao FROM clientes_geo WHERE cod IN ({ph})", parte
+        ).fetchall():
+            cache[str(row['cod'])] = row
+
+    pendentes = [r for r in rota if r['cod'] not in cache]
+
+    # Geocodifica um lote pequeno agora (cabe no timeout); o resto vem nas próximas chamadas.
+    for rec in pendentes[:_GEO_MAX]:
+        lat, lng, prec = _geocodificar(rec)
+        try:
+            conn.execute(
+                "INSERT INTO clientes_geo (cod, lat, lng, precisao, atualizado_em) VALUES (?,?,?,?,?)",
+                (rec['cod'], lat, lng, prec, time.strftime('%Y-%m-%d %H:%M:%S'))
+            )
+            conn.commit()
+        except INTEGRITY_ERRORS:
+            conn.rollback()
+        cache[rec['cod']] = {'cod': rec['cod'], 'lat': lat, 'lng': lng, 'precisao': prec}
+
+    conn.close()
+
+    # Monta a saída: só clientes que já têm coordenada.
+    clientes = []
+    for rec in rota:
+        c = cache.get(rec['cod'])
+        if not c or c['lat'] is None:
+            continue
+        clientes.append({**rec, 'lat': float(c['lat']), 'lng': float(c['lng']),
+                         'precisao': c['precisao']})
+
+    faltam = len(pendentes) - min(len(pendentes), _GEO_MAX)
+    return jsonify({
+        "ok": True, "vend": vend, "total": len(rota), "prontos": len(clientes),
+        "preparando": faltam > 0, "clientes": clientes,
+    })
 
 # ── TROCAR SENHA (funcionário) ────────────────────────
 @app.route('/senha', methods=['POST'])
@@ -440,8 +661,14 @@ def salvar_registros(auth_fid):
         campos = (
             str(reg.get('cidade')    or '')[:100],
             str(reg.get('entrada')   or '')[:5],
+            str(reg.get('cafe_manha_inicio') or '')[:5],
+            str(reg.get('cafe_manha_fim')    or '')[:5],
             str(reg.get('almoco_inicio') or '')[:5],
             str(reg.get('almoco_fim')    or '')[:5],
+            str(reg.get('cafe_tarde_inicio') or '')[:5],
+            str(reg.get('cafe_tarde_fim')    or '')[:5],
+            str(reg.get('jantar_inicio') or '')[:5],
+            str(reg.get('jantar_fim')    or '')[:5],
             str(reg.get('saida')     or '')[:5],
             str(reg.get('observacao')or '')[:500],
         )
@@ -450,11 +677,16 @@ def salvar_registros(auth_fid):
         # lançado pelo admin, o WHERE impede a sobrescrita — o abono prevalece.
         conn.execute(f"""
             INSERT INTO registros (funcionario_id, data, cidade, entrada,
-                almoco_inicio, almoco_fim, saida, observacao, tipo)
-            VALUES (?,?,?,?,?,?,?,?,'')
+                cafe_manha_inicio, cafe_manha_fim, almoco_inicio, almoco_fim,
+                cafe_tarde_inicio, cafe_tarde_fim, jantar_inicio, jantar_fim,
+                saida, observacao, tipo)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'')
             ON CONFLICT(funcionario_id, data) DO UPDATE SET
                 cidade=excluded.cidade, entrada=excluded.entrada,
+                cafe_manha_inicio=excluded.cafe_manha_inicio, cafe_manha_fim=excluded.cafe_manha_fim,
                 almoco_inicio=excluded.almoco_inicio, almoco_fim=excluded.almoco_fim,
+                cafe_tarde_inicio=excluded.cafe_tarde_inicio, cafe_tarde_fim=excluded.cafe_tarde_fim,
+                jantar_inicio=excluded.jantar_inicio, jantar_fim=excluded.jantar_fim,
                 saida=excluded.saida, observacao=excluded.observacao,
                 enviado_em={NOW_SQL}
             WHERE registros.tipo='' OR registros.tipo IS NULL
@@ -649,7 +881,7 @@ def listar_funcionarios():
         conn.close()
         return jsonify({"ok": False, "erro": "Parâmetros inválidos"}), 400
     rows = conn.execute(
-        "SELECT id, nome, usuario, matricula, cargo, ativo, criado_em FROM funcionarios ORDER BY nome LIMIT ? OFFSET ?",
+        "SELECT id, nome, usuario, matricula, cargo, roteirizacao, ativo, criado_em FROM funcionarios ORDER BY nome LIMIT ? OFFSET ?",
         (limit, offset)
     ).fetchall()
     conn.close()
@@ -672,12 +904,13 @@ def criar_funcionario():
 
     matricula = str(data.get('matricula', '') or '')[:20]
     cargo     = str(data.get('cargo',     '') or '')[:50]
+    roteiriz  = int(bool(data.get('roteirizacao', 0)))
 
     conn = get_db()
     try:
         conn.execute(
-            "INSERT INTO funcionarios (nome, usuario, senha_hash, matricula, cargo) VALUES (?,?,?,?,?)",
-            (nome, usuario, _hash_pbkdf2_full(senha), matricula, cargo)
+            "INSERT INTO funcionarios (nome, usuario, senha_hash, matricula, cargo, roteirizacao) VALUES (?,?,?,?,?,?)",
+            (nome, usuario, _hash_pbkdf2_full(senha), matricula, cargo, roteiriz)
         )
         conn.commit()
         return jsonify({"ok": True})
@@ -700,6 +933,7 @@ def atualizar_funcionario(fid):
     matricula = str(data.get('matricula', '') or '')[:20]
     cargo     = str(data.get('cargo',     '') or '')[:50]
     ativo     = int(bool(data.get('ativo', 1)))
+    roteiriz  = int(bool(data.get('roteirizacao', 0)))
 
     conn = get_db()
     if data.get('senha'):
@@ -708,13 +942,13 @@ def atualizar_funcionario(fid):
             conn.close()
             return jsonify({"ok": False, "erro": "Senha deve ter no mínimo 6 caracteres"}), 400
         conn.execute(
-            "UPDATE funcionarios SET nome=?, usuario=?, senha_hash=?, matricula=?, cargo=?, ativo=? WHERE id=?",
-            (nome, usuario, _hash_pbkdf2_full(senha), matricula, cargo, ativo, fid)
+            "UPDATE funcionarios SET nome=?, usuario=?, senha_hash=?, matricula=?, cargo=?, roteirizacao=?, ativo=? WHERE id=?",
+            (nome, usuario, _hash_pbkdf2_full(senha), matricula, cargo, roteiriz, ativo, fid)
         )
     else:
         conn.execute(
-            "UPDATE funcionarios SET nome=?, usuario=?, matricula=?, cargo=?, ativo=? WHERE id=?",
-            (nome, usuario, matricula, cargo, ativo, fid)
+            "UPDATE funcionarios SET nome=?, usuario=?, matricula=?, cargo=?, roteirizacao=?, ativo=? WHERE id=?",
+            (nome, usuario, matricula, cargo, roteiriz, ativo, fid)
         )
     if not ativo:
         conn.execute("DELETE FROM tokens WHERE funcionario_id=?", (fid,))
@@ -743,6 +977,146 @@ def admin_registros():
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
+
+@app.route('/admin/exportar', methods=['GET'])
+@require_admin_key
+def admin_exportar():
+    """Gera a planilha de ponto no modelo da empresa: um bloco por funcionário,
+    com os dias do mês preenchidos a partir dos registros. Param: mes=YYYY-MM."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    mes = request.args.get('mes', '')
+    if not _validar_mes(mes):
+        return jsonify({"ok": False, "erro": "Use mes=YYYY-MM"}), 400
+    ano, m = int(mes[:4]), int(mes[5:7])
+    ndias = calendar.monthrange(ano, m)[1]
+
+    ABONO_LABEL = {'falta': 'FALTA', 'atestado': 'ATESTADO', 'folga': 'FOLGA', 'feriado': 'FERIADO'}
+    DIAS = ['SEGUNDA', 'TERÇA', 'QUARTA', 'QUINTA', 'SEXTA', 'SÁBADO', 'DOMINGO']
+    MESNOME = ['', 'JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO',
+               'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO']
+
+    conn = get_db()
+    funcs = conn.execute(
+        "SELECT id, nome, matricula, cargo FROM funcionarios "
+        "WHERE ativo=1 AND usuario <> 'admin' ORDER BY nome"
+    ).fetchall()
+    regs = conn.execute(
+        "SELECT * FROM registros WHERE data LIKE ? ORDER BY data", (f"{mes}%",)
+    ).fetchall()
+    conn.close()
+
+    # registros por funcionário e dia
+    por_func = {}
+    for r in regs:
+        d = dict(r)
+        por_func.setdefault(d['funcionario_id'], {})[d['data']] = d
+
+    def to_time(s):
+        s = (s or '').strip()
+        if not s or ':' not in s:
+            return None
+        try:
+            hh, mm = s.split(':')[:2]
+            return _dt.time(int(hh), int(mm))
+        except Exception:
+            return None
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"{MESNOME[m]} {ano}"
+
+    bold = Font(bold=True)
+    center = Alignment(horizontal='center', vertical='center')
+    thin = Side(style='thin', color='BBBBBB')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill('solid', fgColor='1F2937')
+    head_font = Font(bold=True, color='FFFFFF')
+
+    widths = {'A': 11, 'B': 11, 'C': 20, 'D': 8, 'E': 8, 'F': 8, 'G': 8,
+              'H': 8, 'I': 8, 'J': 8, 'K': 8, 'L': 8, 'M': 8, 'N': 10}
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+
+    top = 1
+    for f in funcs:
+        fid, nome, matric, cargo = f['id'], f['nome'], f['matricula'], (f['cargo'] or '')
+        dados = por_func.get(fid, {})
+
+        ws.cell(top, 3, 'CONTROLE DE PONTO / TRABALHO EXTERNO').font = bold
+        ws.cell(top + 2, 3, nome.upper()).font = bold
+        # cabeçalhos
+        ws.cell(top + 3, 1, 'DATA'); ws.cell(top + 3, 3, 'LOCAL DA ENTRADA')
+        ws.cell(top + 3, 4, 'HORÁRIOS DE TRABALHO'); ws.cell(top + 3, 14, 'DIA')
+        sub1 = top + 4
+        ws.cell(sub1, 4, 'ENTRADA'); ws.cell(sub1, 5, 'DESCANSO / CAFÉ')
+        ws.cell(sub1, 7, 'ALMOÇO'); ws.cell(sub1, 9, 'DESCANSO / CAFÉ')
+        ws.cell(sub1, 11, 'JANTAR'); ws.cell(sub1, 13, 'SAÍDA'); ws.cell(sub1, 14, '8:48:00')
+        sub2 = top + 5
+        for c, t in [(5, 'INÍCIO'), (6, 'FINAL'), (7, 'INÍCIO'), (8, 'FINAL'),
+                     (9, 'INÍCIO'), (10, 'FINAL'), (11, 'INÍCIO'), (12, 'FINAL')]:
+            ws.cell(sub2, c, t)
+        for rr in (top + 3, sub1, sub2):
+            for c in range(1, 15):
+                cell = ws.cell(rr, c)
+                cell.font = head_font; cell.fill = head_fill
+                cell.alignment = center; cell.border = border
+
+        first_data = top + 6
+        for i in range(ndias):
+            dia = i + 1
+            row = first_data + i
+            data_iso = f"{ano:04d}-{m:02d}-{dia:02d}"
+            dt = _dt.date(ano, m, dia)
+            reg = dados.get(data_iso, {})
+            tipo = (reg.get('tipo') or '').strip().lower()
+
+            ws.cell(row, 1, DIAS[dt.weekday()])
+            ws.cell(row, 2, dt).number_format = 'DD/MM/YYYY'
+            if tipo in ABONO_LABEL:
+                ws.cell(row, 3, ABONO_LABEL[tipo]).font = bold
+            else:
+                ws.cell(row, 3, reg.get('cidade') or '')
+            colmap = {4: 'entrada', 5: 'cafe_manha_inicio', 6: 'cafe_manha_fim',
+                      7: 'almoco_inicio', 8: 'almoco_fim', 9: 'cafe_tarde_inicio',
+                      10: 'cafe_tarde_fim', 11: 'jantar_inicio', 12: 'jantar_fim',
+                      13: 'saida'}
+            for c, campo in colmap.items():
+                t = to_time(reg.get(campo))
+                if t is not None:
+                    cell = ws.cell(row, c, t)
+                    cell.number_format = 'HH:MM'
+            # total do dia (mesma lógica da planilha original)
+            ws.cell(row, 14,
+                f'=IF(C{row}="FOLGA",-TIME(8,48,0),IF(M{row}=0,0,IF(C{row}&D{row}="",0,'
+                f'IF(OR(C{row}="FÉRIAS",C{row}="FALTA",C{row}="ATESTADO",C{row}="FERIADO"),0,'
+                f'(G{row}-D{row})+(K{row}-H{row})+(M{row}-L{row})-TIME(8,48,0))))))'
+            ).number_format = '[h]:mm'
+            for c in range(1, 15):
+                ws.cell(row, c).border = border
+
+        last_data = first_data + ndias - 1
+        foot = last_data + 1
+        ws.cell(foot, 11, 'TOTAL DO MÊS').font = bold
+        tot = ws.cell(foot, 14, f'=SUM(N{first_data}:N{last_data})')
+        tot.number_format = '[h]:mm'; tot.font = bold
+
+        ws.cell(foot + 2, 1, 'NOME COMPLETO:').font = bold
+        ws.cell(foot + 2, 3, f'{nome.upper()}   {matric or ""}')
+        ws.cell(foot + 3, 1, 'FUNÇÃO:').font = bold
+        ws.cell(foot + 3, 3, cargo.upper())
+
+        top += 42  # próximo bloco
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"CONTROLE_PONTO_{MESNOME[m]}_{ano}.xlsx"
+    return send_file(buf, as_attachment=True, download_name=fname,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 
 @app.route('/admin/abono', methods=['POST'])
 @require_admin_key
